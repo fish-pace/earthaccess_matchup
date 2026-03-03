@@ -11,7 +11,7 @@ Registration
 The accessor is **not** registered automatically on import of the
 top-level package.  Users must opt in::
 
-    import earthaccess_matchup.extensions.accessor  # registers .eam
+    import point_collocation.extensions.accessor  # registers .eam
 
     ds = xr.open_dataset(...)
     matched = ds.eam.extract_points(df_points, variables=["sst"])
@@ -54,12 +54,12 @@ class EarthAccessMatchupAccessor:
         variables:
             Dataset variable names to extract.
         nc_type:
-            ``"grouped"`` or ``"flat"`` (see :func:`earthaccess_matchup.matchup`).
+            ``"grouped"`` or ``"flat"`` (see :func:`point_collocation.matchup`).
 
         Returns
         -------
         pandas.DataFrame
-            Same contract as :func:`earthaccess_matchup.matchup`.
+            Same contract as :func:`point_collocation.matchup`.
 
         Not yet implemented.
         """

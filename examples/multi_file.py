@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import earthaccess
 import pandas as pd
 
-import earthaccess_matchup as eam
+import point_collocation as eam
 
 earthaccess.login()
 

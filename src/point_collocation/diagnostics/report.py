@@ -1,7 +1,7 @@
 """MatchupReport — first-class diagnostics for every matchup run.
 
 A ``MatchupReport`` is produced automatically during each call to
-:func:`earthaccess_matchup.matchup` and surfaced to the caller when
+:func:`point_collocation.matchup` and surfaced to the caller when
 ``return_diagnostics=True``.
 
 Recorded information

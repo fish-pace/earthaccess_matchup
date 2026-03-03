@@ -21,7 +21,7 @@ What it shows
 
 from pathlib import Path
 import earthaccess
-import earthaccess_matchup as eam
+import point_collocation as eam
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
