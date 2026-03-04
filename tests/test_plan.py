@@ -392,7 +392,7 @@ class TestPlanPublicApi:
         pts = pd.DataFrame(
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
         )
-        result = plan(pts, source_kwargs={"short_name": "TEST"}, variables=["sst"])
+        result = plan(pts, source_kwargs={"short_name": "TEST"})
         assert isinstance(result, Plan)
 
     def test_plan_raises_on_unknown_data_source(self) -> None:
@@ -400,12 +400,12 @@ class TestPlanPublicApi:
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
         )
         with pytest.raises(ValueError, match="Unknown data_source"):
-            plan(pts, data_source="stac", source_kwargs={}, variables=["sst"])
+            plan(pts, data_source="stac", source_kwargs={})
 
     def test_plan_raises_when_neither_time_nor_date(self) -> None:
         pts = pd.DataFrame({"lat": [0.0], "lon": [0.0], "x": [1]})
         with pytest.raises(ValueError, match="time"):
-            plan(pts, source_kwargs={"short_name": "TEST"}, variables=["sst"])
+            plan(pts, source_kwargs={"short_name": "TEST"})
 
     def test_plan_raises_without_short_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_ea = MagicMock()
@@ -414,7 +414,7 @@ class TestPlanPublicApi:
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
         )
         with pytest.raises(ValueError, match="short_name"):
-            plan(pts, source_kwargs={}, variables=["sst"])
+            plan(pts, source_kwargs={})
 
 
 class TestPlanMapping:
@@ -425,7 +425,6 @@ class TestPlanMapping:
         monkeypatch: pytest.MonkeyPatch,
         points: pd.DataFrame,
         fake_results: list[dict],
-        variables: list[str] | None = None,
         time_buffer: str = "0h",
     ) -> Plan:
         """Helper: run pc.plan() with mocked earthaccess.search_data."""
@@ -435,7 +434,6 @@ class TestPlanMapping:
         return plan(
             points,
             source_kwargs={"short_name": "TEST"},
-            variables=variables or ["sst"],
             time_buffer=time_buffer,
         )
 
@@ -537,16 +535,6 @@ class TestPlanMapping:
         p = self._run_plan(monkeypatch, pts, results)
         assert p.point_granule_map[0] == [0]
 
-    def test_plan_stores_variables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_ea = MagicMock()
-        mock_ea.search_data.return_value = []
-        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = plan(pts, source_kwargs={"short_name": "TEST"}, variables=["Rrs", "sst"])
-        assert p.variables == ["Rrs", "sst"]
-
     def test_plan_stores_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_results = [_make_global_result("2023-06-01T00:00:00Z", "2023-06-01T23:59:59Z")]
         mock_ea = MagicMock()
@@ -555,7 +543,7 @@ class TestPlanMapping:
         pts = pd.DataFrame(
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
         )
-        p = plan(pts, source_kwargs={"short_name": "TEST"}, variables=["sst"])
+        p = plan(pts, source_kwargs={"short_name": "TEST"})
         assert p.results is fake_results or p.results == fake_results
 
 
@@ -1051,3 +1039,302 @@ class TestMatchupWithPlan:
             "2D variable must return a value when chunks={} (dask) is used, not NaN"
         )
 
+
+# ---------------------------------------------------------------------------
+# Task 1: variables removed from plan()
+# ---------------------------------------------------------------------------
+
+class TestPlanNoVariables:
+    """pc.plan() does not accept a variables argument."""
+
+    def test_plan_variables_field_is_empty_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_ea = MagicMock()
+        mock_ea.search_data.return_value = []
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = plan(pts, source_kwargs={"short_name": "TEST"})
+        assert p.variables == []
+
+    def test_plan_does_not_accept_variables_kwarg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_ea = MagicMock()
+        mock_ea.search_data.return_value = []
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        with pytest.raises(TypeError):
+            plan(pts, source_kwargs={"short_name": "TEST"}, variables=["sst"])  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Plan.__getitem__, open_dataset, open_mfdataset
+# ---------------------------------------------------------------------------
+
+class TestPlanGetItem:
+    def _make_plan(self, n_results: int = 3) -> Plan:
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        fake_results = [object() for _ in range(n_results)]
+        return Plan(
+            points=pts,
+            results=fake_results,
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+    def test_integer_index(self) -> None:
+        p = self._make_plan(3)
+        assert p[0] is p.results[0]
+        assert p[2] is p.results[2]
+
+    def test_slice_index(self) -> None:
+        p = self._make_plan(3)
+        sliced = p[0:2]
+        assert sliced == p.results[0:2]
+
+
+class TestPlanOpenDataset:
+    def test_open_dataset_returns_dataset(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        fake_result = object()
+        p = Plan(
+            points=pts,
+            results=[fake_result],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(p[0], open_dataset_kwargs={"engine": "netcdf4"})
+        assert isinstance(ds, xr.Dataset)
+        assert "sst" in ds
+        ds.close()
+        mock_ea.open.assert_called_once_with([fake_result], pqdm_kwargs={"disable": True})
+
+    def test_open_mfdataset_returns_dataset(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(
+            nc_a, engine="netcdf4"
+        )
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=2).to_netcdf(
+            nc_b, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        fake_results = [object(), object()]
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=fake_results,
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        # Patch xr.open_mfdataset to avoid the real coordinate-combination logic
+        fake_ds = xr.Dataset({"sst": (["lat", "lon"], [[1.0]])}, coords={"lat": [0.0], "lon": [0.0]})
+        with patch("xarray.open_mfdataset", return_value=fake_ds) as mock_mfdataset:
+            ds = p.open_mfdataset(p[0:2], open_dataset_kwargs={"engine": "netcdf4"})
+
+        assert ds is fake_ds
+        mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
+        mock_mfdataset.assert_called_once_with([nc_a, nc_b], engine="netcdf4")
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Plan.show_variables()
+# ---------------------------------------------------------------------------
+
+class TestPlanShowVariables:
+    def test_show_variables_prints_dims_and_vars(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
+        captured = capsys.readouterr()
+        assert "Dimensions" in captured.out
+        assert "Variables" in captured.out
+        assert "sst" in captured.out
+
+    def test_show_variables_raises_when_no_granules(self) -> None:
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        with pytest.raises(ValueError, match="No granules"):
+            p.show_variables()
+
+
+# ---------------------------------------------------------------------------
+# Task 4: matchup() variables kwarg and missing-variable error
+# ---------------------------------------------------------------------------
+
+class TestMatchupVariablesKwarg:
+    def test_matchup_variables_kwarg_overrides_plan_variables(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """matchup(plan, variables=["chlor_a"]) uses provided list, not plan.variables."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        # Plan has no variables (empty list)
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        assert "sst" in result.columns
+        assert not math.isnan(result.loc[0, "sst"])
+
+    def test_matchup_raises_on_missing_variable(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """matchup() raises ValueError if a requested variable is not in the dataset."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["nonexistent_var"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ValueError, match="nonexistent_var"):
+            pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+
+    def test_matchup_new_api_no_variables_in_plan(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """New workflow: plan() without variables, matchup() with variables."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        # Build a plan without specifying variables
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        assert p.variables == []
+
+        # Pass variables to matchup() instead
+        result = pc.matchup(p, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        assert "sst" in result.columns
+        assert len(result) == 1
+        assert not math.isnan(result.loc[0, "sst"])
