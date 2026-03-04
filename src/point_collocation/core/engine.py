@@ -38,7 +38,8 @@ _LON_NAMES = ("lon", "longitude", "Longitude", "LON")
 
 def matchup(
     plan: "Plan",
-    **open_dataset_kwargs: object,
+    open_dataset_kwargs: dict | None = None,
+    **kwargs: object,
 ) -> pd.DataFrame:
     """Extract variables from cloud-hosted granules at the given points.
 
@@ -50,10 +51,16 @@ def matchup(
         data source, and search parameters are all taken from the plan.
         One output row is produced per (point, granule) pair; points
         with zero matching granules produce a single NaN row.
-    **open_dataset_kwargs:
-        Extra keyword arguments forwarded to ``xarray.open_dataset`` for
-        every granule opened during the run.  Defaults to
-        ``engine="h5netcdf"`` when no ``engine`` key is provided.
+    open_dataset_kwargs:
+        Optional dictionary of keyword arguments forwarded to
+        ``xarray.open_dataset`` for every granule opened during the run.
+        Defaults to ``engine="h5netcdf"`` when no ``engine`` key is
+        provided.  Individual keyword arguments may also be supplied
+        directly via ``**kwargs`` and will be merged with this dict
+        (``**kwargs`` take precedence on conflict).
+    **kwargs:
+        Additional keyword arguments forwarded to ``xarray.open_dataset``,
+        merged with *open_dataset_kwargs*.
 
     Returns
     -------
@@ -62,7 +69,9 @@ def matchup(
         column and one column per variable in the plan.  Points with
         zero matching granules contribute a single NaN row.
     """
-    return _execute_plan(plan, variables=plan.variables, **open_dataset_kwargs)
+    effective_kwargs = dict(open_dataset_kwargs or {})
+    effective_kwargs.update(kwargs)
+    return _execute_plan(plan, variables=plan.variables, **effective_kwargs)
 
 
 # ---------------------------------------------------------------------------
