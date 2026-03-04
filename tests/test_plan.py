@@ -902,16 +902,3 @@ class TestMatchupWithPlan:
         assert "station_id" in result.columns
         assert result.loc[0, "station_id"] == "STA001"
 
-    def test_matchup_df_still_requires_variables(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Calling matchup(DataFrame) without variables still raises ValueError."""
-        monkeypatch.setattr(
-            "point_collocation.core.engine._resolve_earthaccess_sources",
-            lambda *a, **kw: [],
-        )
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        with pytest.raises(ValueError, match="variables"):
-            pc.matchup(pts, source_kwargs={"short_name": "TEST"})

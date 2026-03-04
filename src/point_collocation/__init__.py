@@ -2,8 +2,10 @@
 
 Public API
 ----------
+:func:`plan`
+    Build a matchup plan by searching for granules that cover the given points.
 :func:`matchup`
-    Extract dataset variables at a table of lat/lon/time points.
+    Execute a :class:`Plan` to extract dataset variables at each point.
 
 Quick start
 -----------
@@ -21,7 +23,7 @@ Quick start
         "time": pd.to_datetime(["2023-06-01", "2023-06-02"]),
     })
 
-    out = pc.matchup(
+    plan = pc.plan(
         df_points,
         data_source="earthaccess",
         source_kwargs={
@@ -30,6 +32,7 @@ Quick start
         },
         variables=["Rrs"],
     )
+    out = pc.matchup(plan)
 
 Optional xarray accessor
 -------------------------
