@@ -631,6 +631,26 @@ class TestPlanSummary:
 # ---------------------------------------------------------------------------
 
 
+def _make_l3_3d_dataset(
+    lats: list[float],
+    lons: list[float],
+    dim3: list[float],
+    dim3_name: str = "wavelength",
+    var_name: str = "Rrs",
+    seed: int = 0,
+) -> xr.Dataset:
+    """Synthetic L3 dataset with a 3D variable (lat, lon, dim3)."""
+    rng = np.random.default_rng(seed)
+    lat_arr = np.array(lats)
+    lon_arr = np.array(lons)
+    dim3_arr = np.array(dim3)
+    data = rng.uniform(0.001, 0.01, (lat_arr.size, lon_arr.size, dim3_arr.size)).astype(np.float32)
+    return xr.Dataset(
+        {var_name: (["lat", "lon", dim3_name], data)},
+        coords={"lat": lat_arr, "lon": lon_arr, dim3_name: dim3_arr},
+    )
+
+
 def _make_l3_dataset(lats: list[float], lons: list[float], seed: int = 0) -> xr.Dataset:
     """Synthetic L3 dataset."""
     rng = np.random.default_rng(seed)
@@ -701,7 +721,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, engine="netcdf4")
+        pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
         mock_ea.search_data.assert_not_called()
 
     def test_matchup_with_plan_calls_open(
@@ -736,8 +756,8 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, engine="netcdf4")
-        mock_ea.open.assert_called_once_with(fake_results)
+        pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
 
     def test_matchup_plan_zero_match_returns_nan_row(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -760,7 +780,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, engine="netcdf4")
+        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert math.isnan(result.loc[0, "sst"])
         assert "granule_id" in result.columns
@@ -796,7 +816,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, engine="netcdf4")
+        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
         assert result.loc[0, "granule_id"] == "https://example.com/g.nc"
@@ -841,7 +861,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, engine="netcdf4")
+        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 2, "One row per (point, granule) pair"
         assert set(result["granule_id"]) == {
             "https://example.com/a.nc",
@@ -901,4 +921,86 @@ class TestMatchupWithPlan:
         result = pc.matchup(p)
         assert "station_id" in result.columns
         assert result.loc[0, "station_id"] == "STA001"
+
+    def test_matchup_3d_variable_expands_without_open_dataset_kwargs(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """3D variables (lat, lon, wavelength) are expanded into per-wavelength columns."""
+        wavelengths = [346, 348, 351]
+        nc_path = str(tmp_path / "PACE_OCI_2023152.L3m.DAY.RRS.Rrs.4km.nc")
+        _make_l3_3d_dataset(
+            [-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], wavelengths, seed=5
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/rrs.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["Rrs"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
+        for wl in wavelengths:
+            assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
+        assert len(result) == 1
+
+    def test_matchup_3d_variable_expands_with_open_dataset_kwargs(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """3D variable expansion works when open_dataset_kwargs dict is passed."""
+        wavelengths = [346, 348, 351]
+        nc_path = str(tmp_path / "PACE_OCI_2023152.L3m.DAY.RRS.Rrs.4km.nc")
+        _make_l3_3d_dataset(
+            [-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], wavelengths, seed=6
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/rrs.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["Rrs"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        # This is the key test: passing open_dataset_kwargs with chunks={} (the original
+        # bug report scenario) must not break 3D variable expansion.
+        result = pc.matchup(p, open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
+        assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
+        for wl in wavelengths:
+            assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
+        assert len(result) == 1
 
