@@ -65,6 +65,13 @@ class GranuleMeta:
     result_index: int
     """Position of this granule's result object in :attr:`Plan.results`."""
 
+    polygon: list[tuple[float, float]] | None = None
+    """GPolygon boundary as ``(lon, lat)`` pairs, or ``None`` for rectangular geometries.
+
+    When present, point containment is tested using the actual polygon boundary
+    (ray-casting algorithm) rather than the coarser bounding-box approximation.
+    """
+
 
 @dataclass
 class Plan:
@@ -574,6 +581,7 @@ def _extract_granule_meta(result: Any, *, result_index: int) -> GranuleMeta:
 
     granule_id = _get_data_url(umm)
     bbox = _get_bbox(umm)
+    polygon = _get_polygon_points(umm)
 
     return GranuleMeta(
         granule_id=granule_id,
@@ -581,6 +589,7 @@ def _extract_granule_meta(result: Any, *, result_index: int) -> GranuleMeta:
         end=end,
         bbox=bbox,
         result_index=result_index,
+        polygon=polygon,
     )
 
 
@@ -672,6 +681,83 @@ def _get_bbox(
     )
 
 
+def _get_polygon_points(
+    umm: dict[str, Any],
+) -> list[tuple[float, float]] | None:
+    """Return GPolygon boundary as ``(lon, lat)`` pairs, or ``None``.
+
+    Returns ``None`` when the granule uses ``BoundingRectangles`` geometry
+    (e.g. L3 global products), in which case the bounding-box check in
+    :func:`_match_points_to_granules` is used instead.
+
+    Parameters
+    ----------
+    umm:
+        UMM metadata dict for a single granule.
+    """
+    spatial: dict[str, Any] = umm.get("SpatialExtent", {})
+    geom: dict[str, Any] = (
+        spatial.get("HorizontalSpatialDomain", {}).get("Geometry", {})
+    )
+    polygons: list[dict[str, Any]] = geom.get("GPolygons", [])
+    if not polygons:
+        return None
+    try:
+        pts = polygons[0]["Boundary"]["Points"]
+        return [(float(p["Longitude"]), float(p["Latitude"])) for p in pts]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            "Malformed GPolygon in granule SpatialExtent: expected "
+            "'GPolygons[0].Boundary.Points' with 'Longitude'/'Latitude' keys. "
+            f"Got: {polygons[0]!r}"
+        ) from exc
+
+
+def _point_in_polygon(
+    lon: float,
+    lat: float,
+    polygon: list[tuple[float, float]],
+) -> bool:
+    """Return ``True`` if ``(lon, lat)`` lies inside *polygon*.
+
+    Uses the ray-casting (even-odd rule) algorithm in lon/lat space.
+    The polygon need not be explicitly closed (first == last point), but
+    closing it is harmless.
+
+    Parameters
+    ----------
+    lon, lat:
+        The point to test.
+    polygon:
+        Sequence of ``(lon, lat)`` pairs describing the polygon boundary.
+
+    Notes
+    -----
+    This implementation uses planar geometry in lon/lat space.  Results may
+    be incorrect for polygons that cross the antimeridian (±180°) — for
+    example, a PACE OCI swath that starts in the western Pacific, crosses
+    180°, and ends in the eastern Pacific.  For typical regional use cases
+    (e.g. Gulf of Mexico, coastal US) the granule polygons do not cross the
+    antimeridian and this algorithm is accurate.  If antimeridian-crossing
+    granules are a concern, consider providing an explicit ``bounding_box``
+    in ``source_kwargs`` to restrict the earthaccess search to the region of
+    interest, which will exclude such far-field granules before they reach
+    the polygon test.
+    """
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if (yi > lat) != (yj > lat):
+            intersect_x = (xj - xi) * (lat - yi) / (yj - yi) + xi
+            if lon < intersect_x:
+                inside = not inside
+        j = i
+    return inside
+
+
 def _match_points_to_granules(
     points: pd.DataFrame,
     granule_metas: list[GranuleMeta],
@@ -682,7 +768,15 @@ def _match_points_to_granules(
     Matching criteria (all must be satisfied):
 
     * **Temporal**: ``granule.begin - buffer ≤ t_point ≤ granule.end + buffer``
-    * **Spatial**: point ``(lat, lon)`` falls within the granule's bounding box.
+    * **Spatial**:
+
+      - For L2 GPolygon granules (``gm.polygon`` is set): the point must lie
+        *inside* the polygon boundary (ray-casting algorithm).
+      - For L3 BoundingRectangle granules (``gm.bbox`` set, ``gm.polygon``
+        is ``None``): the point must fall within the bounding box.
+
+    Using the actual GPolygon for L2 data avoids false positives that arise
+    from the coarser bounding-box approximation.
 
     All timestamps are compared as timezone-naive UTC values so that
     tz-aware granule timestamps (ending in ``Z``) and tz-naive point
@@ -708,8 +802,11 @@ def _match_points_to_granules(
             # Temporal check
             if not (begin - buffer <= t <= end + buffer):
                 continue
-            # Spatial check
-            if gm.bbox is not None:
+            # Spatial check — polygon (L2 GPolygon) takes priority over bbox
+            if gm.polygon is not None:
+                if not _point_in_polygon(lon, lat, gm.polygon):
+                    continue
+            elif gm.bbox is not None:
                 west, south, east, north = gm.bbox
                 if not (south <= lat <= north and west <= lon <= east):
                     continue

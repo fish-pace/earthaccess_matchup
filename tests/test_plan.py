@@ -20,10 +20,12 @@ from point_collocation.core.plan import (
     _extract_granule_meta,
     _get_bbox,
     _get_data_url,
+    _get_polygon_points,
     _get_umm,
     _match_points_to_granules,
     _parse_time_buffer,
     _plan_normalise_time,
+    _point_in_polygon,
     plan,
 )
 
@@ -276,6 +278,111 @@ class TestGetBbox:
 
 
 # ---------------------------------------------------------------------------
+# _get_polygon_points
+# ---------------------------------------------------------------------------
+
+class TestGetPolygonPoints:
+    def _make_gpolygon_umm(self, points: list[dict[str, float]]) -> dict:
+        return {
+            "SpatialExtent": {
+                "HorizontalSpatialDomain": {
+                    "Geometry": {
+                        "GPolygons": [{"Boundary": {"Points": points}}]
+                    }
+                }
+            }
+        }
+
+    def test_returns_none_for_bounding_rectangles(self) -> None:
+        umm: dict = {
+            "SpatialExtent": {
+                "HorizontalSpatialDomain": {
+                    "Geometry": {
+                        "BoundingRectangles": [
+                            {
+                                "WestBoundingCoordinate": -180,
+                                "SouthBoundingCoordinate": -90,
+                                "EastBoundingCoordinate": 180,
+                                "NorthBoundingCoordinate": 90,
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _get_polygon_points(umm) is None
+
+    def test_returns_none_for_empty_geometry(self) -> None:
+        umm: dict = {"SpatialExtent": {}}
+        assert _get_polygon_points(umm) is None
+
+    def test_returns_lon_lat_pairs_for_gpolygon(self) -> None:
+        pts = [
+            {"Longitude": -50.0, "Latitude": 30.0},
+            {"Longitude": -40.0, "Latitude": 50.0},
+            {"Longitude": -30.0, "Latitude": 30.0},
+        ]
+        result = _get_polygon_points(self._make_gpolygon_umm(pts))
+        assert result == [(-50.0, 30.0), (-40.0, 50.0), (-30.0, 30.0)]
+
+    def test_returns_floats(self) -> None:
+        pts = [{"Longitude": -50, "Latitude": 30}, {"Longitude": -40, "Latitude": 50}]
+        result = _get_polygon_points(self._make_gpolygon_umm(pts))
+        assert result is not None
+        for lon, lat in result:
+            assert isinstance(lon, float)
+            assert isinstance(lat, float)
+
+
+# ---------------------------------------------------------------------------
+# _point_in_polygon
+# ---------------------------------------------------------------------------
+
+class TestPointInPolygon:
+    # Simple square: corners at (-10, -10), (10, -10), (10, 10), (-10, 10)
+    SQUARE: list[tuple[float, float]] = [
+        (-10.0, -10.0),
+        (10.0, -10.0),
+        (10.0, 10.0),
+        (-10.0, 10.0),
+    ]
+
+    def test_point_inside(self) -> None:
+        assert _point_in_polygon(0.0, 0.0, self.SQUARE) is True
+
+    def test_point_outside(self) -> None:
+        assert _point_in_polygon(20.0, 20.0, self.SQUARE) is False
+
+    def test_point_outside_one_axis(self) -> None:
+        # lon inside, lat outside
+        assert _point_in_polygon(0.0, 15.0, self.SQUARE) is False
+
+    def test_diagonal_triangle(self) -> None:
+        # Triangle: (0,0), (10,0), (10,10) - right triangle
+        triangle: list[tuple[float, float]] = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
+        # Inside (just below the hypotenuse)
+        assert _point_in_polygon(9.0, 1.0, triangle) is True
+        # Outside (above the hypotenuse)
+        assert _point_in_polygon(1.0, 9.0, triangle) is False
+
+    def test_pace_like_swath_quadrilateral(self) -> None:
+        """A polygon representative of a PACE OCI L2 swath over the Gulf of Mexico."""
+        # Approximate swath corners from examples/fixtures/earthaccess_results_sample_l2.json
+        swath: list[tuple[float, float]] = [
+            (-38.97618, 55.74064),
+            (-78.13296, 49.10770),
+            (-67.51633, 32.42610),
+            (-38.46750, 37.98933),
+        ]
+        # Centroid should be inside
+        centroid_lon = sum(p[0] for p in swath) / len(swath)
+        centroid_lat = sum(p[1] for p in swath) / len(swath)
+        assert _point_in_polygon(centroid_lon, centroid_lat, swath) is True
+        # Point far outside
+        assert _point_in_polygon(-150.0, 0.0, swath) is False
+
+
+# ---------------------------------------------------------------------------
 # _match_points_to_granules
 # ---------------------------------------------------------------------------
 
@@ -366,6 +473,70 @@ class TestMatchPointsToGranules:
         pts = pd.DataFrame({"lat": [0.0], "lon": [0.0], "time": [t_end]})
         granules = [self._make_granule("2023-06-01T00:00:00Z", "2023-06-01T12:00:00Z")]
         assert _match_points_to_granules(pts, granules, pd.Timedelta(0))[0] == [0]
+
+    def test_gpolygon_point_inside_matches(self) -> None:
+        """A point inside a GPolygon granule is matched."""
+        polygon: list[tuple[float, float]] = [
+            (-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)
+        ]
+        gm = GranuleMeta(
+            granule_id="https://example.com/l2.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-10.0, -10.0, 10.0, 10.0),
+            result_index=0,
+            polygon=polygon,
+        )
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        mapping = _match_points_to_granules(pts, [gm], pd.Timedelta(0))
+        assert mapping[0] == [0]
+
+    def test_gpolygon_point_in_bbox_but_outside_polygon_excluded(self) -> None:
+        """A point inside the bbox but outside the actual polygon is NOT matched.
+
+        This is the key advantage over the simpler bbox approach:
+        it avoids false positives for L2 swath data.
+        """
+        # Triangle: (0,0), (10,0), (10,10) — bbox is (0,0,10,10)
+        triangle: list[tuple[float, float]] = [
+            (0.0, 0.0), (10.0, 0.0), (10.0, 10.0)
+        ]
+        bbox = (0.0, 0.0, 10.0, 10.0)
+        gm = GranuleMeta(
+            granule_id="https://example.com/l2.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=bbox,
+            result_index=0,
+            polygon=triangle,
+        )
+        # Point at (lon=1, lat=9) is inside the bbox but OUTSIDE the triangle
+        pts = pd.DataFrame(
+            {"lat": [9.0], "lon": [1.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        mapping = _match_points_to_granules(pts, [gm], pd.Timedelta(0))
+        assert mapping[0] == [], "Point outside polygon but inside bbox should NOT match"
+
+    def test_gpolygon_point_outside_polygon_excluded(self) -> None:
+        """A point entirely outside the GPolygon is excluded."""
+        polygon: list[tuple[float, float]] = [
+            (-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)
+        ]
+        gm = GranuleMeta(
+            granule_id="https://example.com/l2.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-10.0, -10.0, 10.0, 10.0),
+            result_index=0,
+            polygon=polygon,
+        )
+        pts = pd.DataFrame(
+            {"lat": [50.0], "lon": [50.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        mapping = _match_points_to_granules(pts, [gm], pd.Timedelta(0))
+        assert mapping[0] == []
 
 
 # ---------------------------------------------------------------------------
