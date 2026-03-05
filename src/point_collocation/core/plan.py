@@ -28,6 +28,7 @@ Typical workflow
 from __future__ import annotations
 
 import datetime
+import fnmatch
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -479,10 +480,16 @@ def _search_earthaccess(
 ) -> tuple[list[Any], list[GranuleMeta]]:
     """Search earthaccess over the full date range of *points*.
 
+    If ``"granule_name"`` is present in *source_kwargs*, it is extracted
+    and used to filter results after the search via :func:`fnmatch.fnmatch`
+    on each result's ``data_links()``.  This is faster than passing
+    ``granule_name`` directly to ``earthaccess.search_data()``.
+
     Returns
     -------
     results:
-        Earthaccess result objects in original search order.
+        Earthaccess result objects in original search order, filtered by
+        ``granule_name`` pattern when provided.
     granule_metas:
         :class:`GranuleMeta` for each result (same order as *results*).
 
@@ -507,12 +514,25 @@ def _search_earthaccess(
             "'source_kwargs' must contain 'short_name' when data_source='earthaccess'."
         )
 
+    # Extract granule_name for post-search filtering (faster than passing to search_data).
+    granule_name_pattern: str | None = base_kwargs.pop("granule_name", None)
+
     times = pd.to_datetime(points["time"])
     min_date = str(times.min().date())
     max_date = str(times.max().date())
     search_kwargs = {**base_kwargs, "temporal": (min_date, max_date)}
 
     results: list[Any] = list(earthaccess.search_data(**search_kwargs))
+
+    if granule_name_pattern is not None:
+        results = [
+            res
+            for res in results
+            if any(
+                fnmatch.fnmatch(link, granule_name_pattern)
+                for link in res.data_links()
+            )
+        ]
 
     granule_metas: list[GranuleMeta] = []
     for i, result in enumerate(results):
