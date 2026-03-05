@@ -128,7 +128,7 @@ class Plan:
               filtered and re-indexed accordingly.  This allows users to
               test a subset of a large plan::
 
-                  res = pc.matchup(plan[0:10], variables=["avw"])
+                  res = pc.matchup(plan[0:10], geometry="grid", variables=["avw"])
         """
         if isinstance(idx, int):
             return self.results[idx]
@@ -188,6 +188,8 @@ class Plan:
     def open_dataset(
         self,
         result: Any,
+        geometry: str | None = None,
+        open_method: str | None = None,
         open_dataset_kwargs: dict[str, Any] | None = None,
     ) -> "xr.Dataset":
         """Open a single granule result as an :class:`xarray.Dataset`.
@@ -197,16 +199,49 @@ class Plan:
         result:
             A single earthaccess result object, typically obtained via
             ``plan[n]``.
+        geometry:
+            Data geometry type.  ``"grid"`` (L3/gridded) or ``"swath"``
+            (L2/swath).  When provided, determines the default
+            ``open_method`` if *open_method* is not given explicitly.
+        open_method:
+            How to open the granule.  ``"dataset"`` uses a plain
+            ``xarray.open_dataset`` call (the default when *geometry* is
+            ``None`` or ``"grid"``).  ``"datatree-merge"`` opens as a
+            DataTree and merges all groups into a flat dataset (the
+            default when *geometry* is ``"swath"``).
         open_dataset_kwargs:
-            Keyword arguments forwarded to ``xarray.open_dataset``.
-            ``chunks`` defaults to ``{}`` (lazy/dask loading) unless
-            explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
-            when not specified.
+            Keyword arguments forwarded to ``xarray.open_dataset`` or
+            ``xarray.open_datatree``.  ``chunks`` defaults to ``{}``
+            (lazy/dask loading) unless explicitly overridden.  ``engine``
+            defaults to ``"h5netcdf"`` when not specified.
 
         Returns
         -------
         xarray.Dataset
         """
+        from point_collocation.core.engine import (
+            _VALID_GEOMETRIES,
+            _VALID_OPEN_METHODS,
+            _merge_datatree,
+            _open_datatree,
+        )
+
+        if geometry is not None and geometry not in _VALID_GEOMETRIES:
+            raise ValueError(
+                f"geometry={geometry!r} is not valid. "
+                f"Must be one of {sorted(_VALID_GEOMETRIES)}."
+            )
+
+        # Resolve open_method default from geometry.
+        if open_method is None:
+            open_method = "datatree-merge" if geometry == "swath" else "dataset"
+
+        if open_method not in _VALID_OPEN_METHODS:
+            raise ValueError(
+                f"open_method={open_method!r} is not valid. "
+                f"Must be one of {sorted(_VALID_OPEN_METHODS)}."
+            )
+
         try:
             import earthaccess  # type: ignore[import-untyped]
         except ImportError as exc:
@@ -226,11 +261,22 @@ class Plan:
             raise RuntimeError(
                 f"Expected 1 file object from earthaccess.open, got {len(file_objs)}."
             )
+
+        if open_method == "datatree-merge":
+            dt = _open_datatree(file_objs[0], kwargs)
+            try:
+                return _merge_datatree(dt)
+            finally:
+                if hasattr(dt, "close"):
+                    dt.close()
+
         return xr.open_dataset(file_objs[0], **kwargs)  # type: ignore[arg-type]
 
     def open_mfdataset(
         self,
         results: "list[Any] | Plan",
+        geometry: str | None = None,
+        open_method: str | None = None,
         open_dataset_kwargs: dict[str, Any] | None = None,
     ) -> "xr.Dataset":
         """Open multiple granule results as a single :class:`xarray.Dataset`.
@@ -241,16 +287,51 @@ class Plan:
             A list of earthaccess result objects, or a :class:`Plan`
             (e.g. ``plan[0:2]``).  When a :class:`Plan` is passed its
             ``results`` attribute is used.
+        geometry:
+            Data geometry type.  ``"grid"`` (L3/gridded) or ``"swath"``
+            (L2/swath).  When provided, determines the default
+            ``open_method`` if *open_method* is not given explicitly.
+        open_method:
+            How to open each granule.  ``"dataset"`` uses
+            ``xarray.open_mfdataset`` across all file objects (the default
+            when *geometry* is ``None`` or ``"grid"``).
+            ``"datatree-merge"`` opens each granule as a DataTree, merges
+            its groups into a flat dataset, then concatenates all granules
+            along a new ``granule`` dimension (the default when *geometry*
+            is ``"swath"``).
         open_dataset_kwargs:
-            Keyword arguments forwarded to ``xarray.open_mfdataset``.
-            ``chunks`` defaults to ``{}`` (lazy/dask loading) unless
-            explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
-            when not specified.
+            Keyword arguments forwarded to ``xarray.open_mfdataset`` or
+            ``xarray.open_datatree``.  ``chunks`` defaults to ``{}``
+            (lazy/dask loading) unless explicitly overridden.  ``engine``
+            defaults to ``"h5netcdf"`` when not specified.
 
         Returns
         -------
         xarray.Dataset
         """
+        from point_collocation.core.engine import (
+            _VALID_GEOMETRIES,
+            _VALID_OPEN_METHODS,
+            _merge_datatree,
+            _open_datatree,
+        )
+
+        if geometry is not None and geometry not in _VALID_GEOMETRIES:
+            raise ValueError(
+                f"geometry={geometry!r} is not valid. "
+                f"Must be one of {sorted(_VALID_GEOMETRIES)}."
+            )
+
+        # Resolve open_method default from geometry.
+        if open_method is None:
+            open_method = "datatree-merge" if geometry == "swath" else "dataset"
+
+        if open_method not in _VALID_OPEN_METHODS:
+            raise ValueError(
+                f"open_method={open_method!r} is not valid. "
+                f"Must be one of {sorted(_VALID_OPEN_METHODS)}."
+            )
+
         try:
             import earthaccess  # type: ignore[import-untyped]
         except ImportError as exc:
@@ -267,6 +348,22 @@ class Plan:
 
         result_list = results.results if isinstance(results, Plan) else list(results)
         file_objs = earthaccess.open(result_list, pqdm_kwargs={"disable": True})
+
+        if open_method == "datatree-merge":
+            # Open each granule as a DataTree, merge its groups, then
+            # concatenate all granule datasets along a new "granule" dim.
+            merged_datasets: list[xr.Dataset] = []
+            for file_obj in file_objs:
+                dt = _open_datatree(file_obj, kwargs)
+                try:
+                    merged_datasets.append(_merge_datatree(dt))
+                finally:
+                    if hasattr(dt, "close"):
+                        dt.close()
+            if not merged_datasets:
+                return xr.Dataset()
+            return xr.concat(merged_datasets, dim="granule")
+
         return xr.open_mfdataset(file_objs, **kwargs)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
@@ -275,17 +372,31 @@ class Plan:
 
     def show_variables(
         self,
+        geometry: str,
+        open_method: str | None = None,
         open_dataset_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Open the first granule and print its dimensions and variables.
 
-        Uses :meth:`open_dataset` to load the first result in the plan,
-        then prints the dataset dimensions and data variable names.  This
-        lets users discover available variable names before running a full
-        :func:`~point_collocation.matchup`.
+        Uses :meth:`open_dataset` (or a DataTree for
+        ``open_method="datatree-merge"``) to load the first result in the
+        plan, then prints the dataset dimensions, data variable names, and
+        geolocation detection results.  This lets users discover available
+        variable names before running a full :func:`~point_collocation.matchup`.
 
         Parameters
         ----------
+        geometry:
+            Data geometry type.  Must be ``"grid"`` (L3/gridded, 1-D
+            lat/lon coordinates) or ``"swath"`` (L2/swath, 2-D lat/lon
+            arrays).  This is a required argument — no default is provided.
+        open_method:
+            How to open the granule.  ``"dataset"`` uses a plain
+            ``xarray.open_dataset`` call.  ``"datatree-merge"`` opens as a
+            DataTree, merges into a flat dataset, then prints the merged
+            summary followed by group details at the end.  Defaults to
+            ``"dataset"`` when ``geometry="grid"`` and ``"datatree-merge"``
+            when ``geometry="swath"``.
         open_dataset_kwargs:
             Keyword arguments forwarded to ``xarray.open_dataset`` when
             opening the first granule.  Passed unchanged to
@@ -296,12 +407,119 @@ class Plan:
         ValueError
             If the plan contains no granules.
         """
+        from point_collocation.core.engine import (
+            _GEOLOC_PAIRS,
+            _VALID_GEOMETRIES,
+            _VALID_OPEN_METHODS,
+            _merge_datatree,
+            _open_datatree,
+        )
+
+        if geometry not in _VALID_GEOMETRIES:
+            raise ValueError(
+                f"geometry={geometry!r} is not valid. "
+                f"Must be one of {sorted(_VALID_GEOMETRIES)}."
+            )
+
+        if open_method is None:
+            open_method = "dataset" if geometry == "grid" else "datatree-merge"
+
+        if open_method not in _VALID_OPEN_METHODS:
+            raise ValueError(
+                f"open_method={open_method!r} is not valid. "
+                f"Must be one of {sorted(_VALID_OPEN_METHODS)}."
+            )
+
         if not self.results:
             raise ValueError("No granules in plan — cannot show variables.")
 
-        with self.open_dataset(self.results[0], open_dataset_kwargs=open_dataset_kwargs) as ds:
-            print(f"Dimensions : {dict(ds.sizes)}")
-            print(f"Variables  : {list(ds.data_vars)}")
+        import xarray as xr
+
+        kwargs: dict[str, Any] = {"chunks": {}, **(open_dataset_kwargs or {})}
+        if "engine" not in kwargs:
+            kwargs["engine"] = "h5netcdf"
+
+        try:
+            import earthaccess  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "The 'earthaccess' package is required. "
+                "Install it with: pip install earthaccess"
+            ) from exc
+
+        file_objs = earthaccess.open([self.results[0]], pqdm_kwargs={"disable": True})
+        if len(file_objs) != 1:
+            raise RuntimeError(
+                f"Expected 1 file object from earthaccess.open, got {len(file_objs)}."
+            )
+        file_obj = file_objs[0]
+
+        print(f"geometry     : {geometry!r}")
+        print(f"open_method  : {open_method!r}")
+
+        if open_method == "datatree-merge":
+            # Open as DataTree and merge for the summary view.
+            dt = _open_datatree(file_obj, kwargs)
+            ds_flat = _merge_datatree(dt)
+
+            # Print merged summary first.
+            print(f"Dimensions : {dict(ds_flat.sizes)}")
+            print(f"Variables  : {list(ds_flat.data_vars)}")
+        else:
+            ds_flat = xr.open_dataset(file_obj, **kwargs)  # type: ignore[arg-type]
+            print(f"Dimensions : {dict(ds_flat.sizes)}")
+            print(f"Variables  : {list(ds_flat.data_vars)}")
+
+        # Geolocation detection results.
+        found_pairs: list[tuple[str, str]] = []
+        for lon_name, lat_name in _GEOLOC_PAIRS:
+            has_lon = lon_name in ds_flat.coords or lon_name in ds_flat.data_vars
+            has_lat = lat_name in ds_flat.coords or lat_name in ds_flat.data_vars
+            if has_lon and has_lat:
+                found_pairs.append((lon_name, lat_name))
+
+        if len(found_pairs) == 0:
+            alt_open_method = "datatree-merge" if open_method == "dataset" else "dataset"
+            alt = f"plan.show_variables(geometry={geometry!r}, open_method={alt_open_method!r})"
+            print(
+                f"\nGeolocation: NONE detected with open_method={open_method!r}. "
+                f"Try {alt}."
+            )
+        elif len(found_pairs) == 1:
+            lon_n, lat_n = found_pairs[0]
+            lon_var = ds_flat.coords[lon_n] if lon_n in ds_flat.coords else ds_flat[lon_n]
+            lat_var = ds_flat.coords[lat_n] if lat_n in ds_flat.coords else ds_flat[lat_n]
+            print(
+                f"\nGeolocation: ({lon_n!r}, {lat_n!r}) — "
+                f"lon dims={tuple(lon_var.dims)}, lat dims={tuple(lat_var.dims)}"
+            )
+        else:
+            print(f"\nGeolocation: ambiguous — detected pairs: {found_pairs}")
+
+        # For datatree-merge, print group details at the end.
+        if open_method == "datatree-merge":
+            print("\nDataTree groups (detail):")
+            try:
+                # xarray DataTree API (>= 2024.x).
+                for node in dt.subtree:  # type: ignore[union-attr]
+                    path = node.path if hasattr(node, "path") else str(node.name)
+                    ds_node = node.ds
+                    if ds_node is not None:
+                        dims_str = dict(ds_node.sizes)
+                        vars_list = list(ds_node.data_vars)
+                        print(f"  {path or '/'}")
+                        print(f"    Dimensions : {dims_str}")
+                        print(f"    Variables  : {vars_list}")
+            except AttributeError:
+                # datatree package API.
+                for path, node in dt.items():  # type: ignore[union-attr]
+                    ds_node = node.ds
+                    if ds_node is not None:
+                        dims_str = dict(ds_node.sizes)
+                        vars_list = list(ds_node.data_vars)
+                        print(f"  {path or '/'}")
+                        print(f"    Dimensions : {dims_str}")
+                        print(f"    Variables  : {vars_list}")
 
     # ------------------------------------------------------------------
     # Summary

@@ -1,9 +1,8 @@
-"""Example 3 — diagnostics and error handling.
+"""Example 3 — variable inspection and error handling.
 
-Demonstrates the ``return_diagnostics=True`` mode, which returns a
-:class:`~point_collocation.diagnostics.report.MatchupReport` alongside
-the result DataFrame.  The report records timing, variables
-found/missing, per-point warnings, and file-open errors.
+Demonstrates how to use ``plan.show_variables()`` to inspect available
+variables before running a matchup, and how to handle the case where a
+requested variable is missing.
 
 Run::
 
@@ -11,10 +10,11 @@ Run::
 
 What it shows
 -------------
-* Using ``data_source='earthaccess'`` with ``return_diagnostics=True``.
-* Requesting a variable that exists and one that does not.
-* Reading the MatchupReport: total / succeeded / skipped counts, elapsed
-  time, and per-granule details.
+* Using ``pc.plan()`` with ``data_source='earthaccess'``.
+* Calling ``plan.show_variables()`` to preview dimensions, variables, and
+  geolocation detection results before committing to a full extraction.
+* Running ``pc.matchup(plan, geometry="grid", variables=[...])`` for
+  L3/gridded data.
 * Requires earthdata authentication (``earthaccess.login()``).
 """
 
@@ -48,48 +48,35 @@ print(df_points.to_string(index=False))
 print()
 
 # ---------------------------------------------------------------------------
-# 2. Run matchup with diagnostics enabled.
-#    Request 'Rrs' (present in PACE OCI RRS) and 'nonexistent_var' (absent)
-#    to show the variables_found / variables_missing tracking.
+# 2. Build plan and inspect available variables.
 # ---------------------------------------------------------------------------
-result, report = pc.matchup(
+plan = pc.plan(
     df_points,
     data_source="earthaccess",
     source_kwargs={
         "short_name": "PACE_OCI_L3M_RRS",
         "granule_name": "*.DAY.*.4km.*",
     },
-    variables=["Rrs", "nonexistent_var"],
-    return_diagnostics=True,
+)
+
+print("Available variables (geometry='grid'):")
+plan.show_variables(geometry="grid")
+print()
+
+# ---------------------------------------------------------------------------
+# 3. Run matchup.
+#    geometry="grid" — L3/gridded data with 1-D lat/lon coordinates.
+# ---------------------------------------------------------------------------
+result = pc.matchup(
+    plan,
+    geometry="grid",
+    variables=["Rrs"],
 )
 
 # ---------------------------------------------------------------------------
-# 3. Print result DataFrame.
+# 4. Print result DataFrame.
 # ---------------------------------------------------------------------------
 print("Matchup result:")
-print(result.to_string(index=False))
+rrs_cols = [c for c in result.columns if c.startswith("Rrs_")][:5]
+print(result[["lat", "lon", "time"] + rrs_cols].to_string(index=False))
 print()
-
-# ---------------------------------------------------------------------------
-# 4. Print full diagnostics report.
-# ---------------------------------------------------------------------------
-print(f"Summary: {report.summary()}")
-print()
-print(f"  Total granules attempted : {report.total}")
-print(f"  Succeeded                : {report.succeeded}")
-print(f"  Skipped (errors)         : {report.skipped}")
-print(f"  Wall-clock time          : {report.elapsed_seconds:.2f}s")
-print()
-
-for i, g in enumerate(report.granules, start=1):
-    print(f"  Granule {i}: {g.granule_id}")
-    print(f"    Succeeded         : {g.succeeded}")
-    print(f"    Elapsed           : {g.elapsed_seconds:.3f}s")
-    print(f"    Variables found   : {g.variables_found}")
-    print(f"    Variables missing : {g.variables_missing}")
-    if g.warnings:
-        for w in g.warnings:
-            print(f"    Warning           : {w}")
-    if g.error:
-        print(f"    Error             : {g.error}")
-    print()

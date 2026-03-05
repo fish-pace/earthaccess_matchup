@@ -11,8 +11,8 @@ Run::
 What it shows
 -------------
 * Building a minimal ``df_points`` DataFrame manually.
-* Calling ``pc.matchup()`` with ``data_source='earthaccess'`` and
-  ``source_kwargs`` specifying the collection to search.
+* Using ``pc.plan()`` to search for granules.
+* Calling ``pc.matchup(plan, geometry="grid", ...)`` for L3/gridded data.
 * Inspecting the returned DataFrame.
 * Requires earthdata authentication (``earthaccess.login()``).
 """
@@ -51,22 +51,34 @@ print(df_points.to_string(index=False))
 print()
 
 # ---------------------------------------------------------------------------
-# 2. Run matchup.
+# 2. Build a plan.
 #    data_source='earthaccess' searches NASA Earthdata automatically;
 #    source_kwargs are passed directly to earthaccess.search_data().
 # ---------------------------------------------------------------------------
-result = pc.matchup(
+plan = pc.plan(
     df_points,
     data_source="earthaccess",
     source_kwargs={
         "short_name": "AQUA_MODIS_L3m_DAY_SST_sst_4km",
         "granule_name": "*.DAY.SST.sst.4km.*",
     },
+)
+
+# Inspect available variables before running the full matchup.
+plan.show_variables(geometry="grid")
+
+# ---------------------------------------------------------------------------
+# 3. Run matchup.
+#    geometry="grid" — L3/gridded data with 1-D lat/lon coordinates.
+# ---------------------------------------------------------------------------
+result = pc.matchup(
+    plan,
+    geometry="grid",
     variables=["sst", "chlor_a"],
 )
 
 # ---------------------------------------------------------------------------
-# 3. Inspect results.
+# 4. Inspect results.
 # ---------------------------------------------------------------------------
 print("Matchup result:")
 print(result.to_string(index=False))

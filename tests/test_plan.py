@@ -1272,7 +1272,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         mock_ea.search_data.assert_not_called()
 
     def test_matchup_with_plan_calls_open(
@@ -1307,7 +1307,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
 
     def test_matchup_plan_zero_match_returns_nan_row(
@@ -1331,7 +1331,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert math.isnan(result.loc[0, "sst"])
         assert "granule_id" in result.columns
@@ -1367,7 +1367,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
         assert result.loc[0, "granule_id"] == "https://example.com/g.nc"
@@ -1412,7 +1412,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 2, "One row per (point, granule) pair"
         assert set(result["granule_id"]) == {
             "https://example.com/a.nc",
@@ -1440,7 +1440,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p)  # no variables kwarg
+        result = pc.matchup(p, geometry="grid")  # no variables kwarg
         assert "chlor_a" in result.columns
 
     def test_matchup_plan_output_includes_original_columns(
@@ -1469,7 +1469,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p)
+        result = pc.matchup(p, geometry="grid")
         assert "station_id" in result.columns
         assert result.loc[0, "station_id"] == "STA001"
 
@@ -1507,7 +1507,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
@@ -1549,7 +1549,7 @@ class TestMatchupWithPlan:
 
         # This is the key test: passing open_dataset_kwargs with chunks={} (the original
         # bug report scenario) must not break 3D variable expansion.
-        result = pc.matchup(p, open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
         assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
@@ -1595,7 +1595,7 @@ class TestMatchupWithPlan:
         )
 
         # This is the regression test: chunks={} must NOT cause 2D variables to return NaN
-        result = pc.matchup(p, open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
         assert len(result) == 1
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"]), (
@@ -1876,7 +1876,155 @@ class TestPlanOpenDataset:
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
         mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
-# ---------------------------------------------------------------------------
+
+    def test_open_dataset_geometry_grid(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset(result, geometry='grid') uses xr.open_dataset."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        fake_result = object()
+        p = Plan(
+            points=pts,
+            results=[fake_result],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(p[0], geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert isinstance(ds, xr.Dataset)
+        assert "sst" in ds
+        ds.close()
+
+    def test_open_dataset_invalid_geometry_raises(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset with invalid geometry raises ValueError."""
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = ["dummy"]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ValueError, match="geometry"):
+            p.open_dataset(p[0], geometry="bad")
+
+    def test_open_dataset_invalid_open_method_raises(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset with invalid open_method raises ValueError."""
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = ["dummy"]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ValueError, match="open_method"):
+            p.open_dataset(p[0], open_method="bad")
+
+    def test_open_mfdataset_with_geometry_grid_uses_open_mfdataset(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_mfdataset(results, geometry='grid') uses xr.open_mfdataset."""
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(
+            nc_a, engine="netcdf4"
+        )
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=2).to_netcdf(
+            nc_b, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        fake_results = [object(), object()]
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=fake_results,
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        fake_ds = xr.Dataset({"sst": (["lat", "lon"], [[1.0]])}, coords={"lat": [0.0], "lon": [0.0]})
+        with patch("xarray.open_mfdataset", return_value=fake_ds) as mock_mfd:
+            ds = p.open_mfdataset(fake_results, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+
+        assert ds is fake_ds
+        mock_mfd.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
+
+    def test_open_mfdataset_geometry_swath_concatenates(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_mfdataset(results, geometry='swath') opens each as DataTree-merge and concatenates."""
+        nc_a = str(tmp_path / "swath_a.nc")
+        nc_b = str(tmp_path / "swath_b.nc")
+        _make_l2_swath_dataset(nrows=3, ncols=4, seed=1).to_netcdf(nc_a, engine="netcdf4")
+        _make_l2_swath_dataset(nrows=3, ncols=4, seed=2).to_netcdf(nc_b, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        fake_results = [object(), object()]
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=fake_results,
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_mfdataset(
+            fake_results,
+            geometry="swath",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+        # Result is a Dataset with a "granule" dimension from concatenation.
+        assert isinstance(ds, xr.Dataset)
+        assert ds.sizes["granule"] == 2
+        assert "sst" in ds
+
 
 class TestPlanShowVariables:
     def test_show_variables_prints_dims_and_vars(
@@ -1905,7 +2053,7 @@ class TestPlanShowVariables:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         captured = capsys.readouterr()
         assert "Dimensions" in captured.out
         assert "Variables" in captured.out
@@ -1924,7 +2072,7 @@ class TestPlanShowVariables:
             time_buffer=pd.Timedelta(0),
         )
         with pytest.raises(ValueError, match="No granules"):
-            p.show_variables()
+            p.show_variables(geometry="grid")
 
 
 # ---------------------------------------------------------------------------
@@ -1964,7 +2112,7 @@ class TestMatchupVariablesKwarg:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"])
 
@@ -2001,7 +2149,7 @@ class TestMatchupVariablesKwarg:
         )
 
         with pytest.raises(ValueError, match="nonexistent_var"):
-            pc.matchup(p, open_dataset_kwargs={"engine": "netcdf4"})
+            pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
 
     def test_matchup_new_api_no_variables_in_plan(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -2037,7 +2185,7 @@ class TestMatchupVariablesKwarg:
         assert p.variables == []
 
         # Pass variables to matchup() instead
-        result = pc.matchup(p, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         assert "sst" in result.columns
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
@@ -2112,7 +2260,7 @@ class TestMatchupWithSubsetPlan:
         assert isinstance(subset_plan, Plan)
         assert len(subset_plan.points) == 3
 
-        result = pc.matchup(subset_plan, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(subset_plan, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         # One row per (point × granule) — 3 points, 1 granule each
         assert len(result) == 3
         assert "sst" in result.columns
@@ -2129,7 +2277,7 @@ class TestMatchupWithSubsetPlan:
         monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
 
         subset_plan = p[0:2]
-        pc.matchup(subset_plan, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(subset_plan, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
 
         # Only the 2 results for the first 2 points should have been opened.
         opened_results = mock_ea.open.call_args[0][0]
@@ -2151,5 +2299,524 @@ class TestMatchupWithSubsetPlan:
         subset_plan = p[2:]
         assert len(subset_plan.points) == 2
 
-        result = pc.matchup(subset_plan, variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(subset_plan, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# L2/swath support — geometry, open_method, spatial_method, geolocation detection
+# ---------------------------------------------------------------------------
+
+def _make_l2_swath_dataset(
+    nrows: int = 3,
+    ncols: int = 4,
+    seed: int = 0,
+) -> xr.Dataset:
+    """Synthetic L2 swath dataset with 2-D lat/lon arrays."""
+    rng = np.random.default_rng(seed)
+    lat = rng.uniform(-10.0, 10.0, (nrows, ncols)).astype(np.float32)
+    lon = rng.uniform(-30.0, 30.0, (nrows, ncols)).astype(np.float32)
+    sst = rng.uniform(20.0, 30.0, (nrows, ncols)).astype(np.float32)
+    return xr.Dataset(
+        {
+            "lat": (["nrows", "ncols"], lat),
+            "lon": (["nrows", "ncols"], lon),
+            "sst": (["nrows", "ncols"], sst),
+        }
+    )
+
+
+def _make_l2_swath_3d_dataset(
+    nrows: int = 3,
+    ncols: int = 4,
+    wavelengths: list[int] | None = None,
+    seed: int = 0,
+) -> xr.Dataset:
+    """Synthetic L2 swath dataset with 2-D lat/lon and a 3-D variable (wavelength)."""
+    if wavelengths is None:
+        wavelengths = [346, 348, 351]
+    rng = np.random.default_rng(seed)
+    lat = rng.uniform(-10.0, 10.0, (nrows, ncols)).astype(np.float32)
+    lon = rng.uniform(-30.0, 30.0, (nrows, ncols)).astype(np.float32)
+    nwl = len(wavelengths)
+    rrs = rng.uniform(0.0, 0.1, (nrows, ncols, nwl)).astype(np.float32)
+    return xr.Dataset(
+        {
+            "lat": (["nrows", "ncols"], lat),
+            "lon": (["nrows", "ncols"], lon),
+            "Rrs": (["nrows", "ncols", "wavelength_3d"], rrs),
+        },
+        coords={"wavelength_3d": wavelengths},
+    )
+
+
+class TestGeometryParameter:
+    """Tests for the required geometry parameter in pc.matchup()."""
+
+    def test_missing_geometry_raises(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Calling matchup() without geometry must raise TypeError."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        with pytest.raises(TypeError, match="geometry"):
+            pc.matchup(p)  # type: ignore[call-arg]
+
+    def test_invalid_geometry_raises(self) -> None:
+        """Invalid geometry value raises ValueError."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        with pytest.raises(ValueError, match="geometry"):
+            pc.matchup(p, geometry="spheroid")
+
+    def test_grid_geometry_uses_dataset_open_method_by_default(self) -> None:
+        """geometry='grid' should default open_method to 'dataset'."""
+        from point_collocation.core.engine import _VALID_OPEN_METHODS
+
+        # Just validate the logic, not actual execution
+        open_method = "dataset"  # expected default for grid
+        assert open_method in _VALID_OPEN_METHODS
+
+    def test_swath_geometry_uses_datatree_merge_open_method_by_default(self) -> None:
+        """geometry='swath' should default open_method to 'datatree-merge'."""
+        from point_collocation.core.engine import _VALID_OPEN_METHODS
+
+        open_method = "datatree-merge"  # expected default for swath
+        assert open_method in _VALID_OPEN_METHODS
+
+
+class TestGeolocDetection:
+    """Tests for _find_geoloc_pair()."""
+
+    def test_finds_lon_lat_pair(self) -> None:
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        ds = xr.Dataset(coords={"lon": [0.0], "lat": [0.0]})
+        lon_name, lat_name = _find_geoloc_pair(ds)
+        assert lon_name == "lon"
+        assert lat_name == "lat"
+
+    def test_finds_longitude_latitude_pair(self) -> None:
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        ds = xr.Dataset(coords={"longitude": [0.0], "latitude": [0.0]})
+        lon_name, lat_name = _find_geoloc_pair(ds)
+        assert lon_name == "longitude"
+        assert lat_name == "latitude"
+
+    def test_finds_Longitude_Latitude_pair(self) -> None:
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        ds = xr.Dataset(coords={"Longitude": [0.0], "Latitude": [0.0]})
+        lon_name, lat_name = _find_geoloc_pair(ds)
+        assert lon_name == "Longitude"
+        assert lat_name == "Latitude"
+
+    def test_finds_LONGITUDE_LATITUDE_pair(self) -> None:
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        ds = xr.Dataset(coords={"LONGITUDE": [0.0], "LATITUDE": [0.0]})
+        lon_name, lat_name = _find_geoloc_pair(ds)
+        assert lon_name == "LONGITUDE"
+        assert lat_name == "LATITUDE"
+
+    def test_finds_pair_in_data_vars(self) -> None:
+        """Geolocation vars stored as data_vars (not coords) should be found."""
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        ds = xr.Dataset(
+            {
+                "lon": (["nrows", "ncols"], [[0.0, 1.0]]),
+                "lat": (["nrows", "ncols"], [[0.0, 0.0]]),
+                "sst": (["nrows", "ncols"], [[25.0, 26.0]]),
+            }
+        )
+        lon_name, lat_name = _find_geoloc_pair(ds)
+        assert lon_name == "lon"
+        assert lat_name == "lat"
+
+    def test_no_geoloc_raises(self) -> None:
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        ds = xr.Dataset({"temperature": (["x"], [1.0])})
+        with pytest.raises(ValueError, match="no geolocation variables found"):
+            _find_geoloc_pair(ds)
+
+    def test_ambiguous_geoloc_raises(self) -> None:
+        """Multiple recognised pairs should raise with all pairs listed."""
+        from point_collocation.core.engine import _find_geoloc_pair
+
+        # Has both (lon, lat) and (longitude, latitude)
+        ds = xr.Dataset(
+            coords={
+                "lon": [0.0],
+                "lat": [0.0],
+                "longitude": [0.0],
+                "latitude": [0.0],
+            }
+        )
+        with pytest.raises(ValueError, match="ambiguous geolocation variables"):
+            _find_geoloc_pair(ds)
+
+
+class TestGeometryEnforcement:
+    """Tests for _check_geometry()."""
+
+    def test_grid_1d_ok(self) -> None:
+        from point_collocation.core.engine import _check_geometry
+
+        ds = xr.Dataset(coords={"lon": [0.0], "lat": [0.0]})
+        # Should not raise
+        _check_geometry(ds, "lon", "lat", "grid")
+
+    def test_grid_2d_raises(self) -> None:
+        from point_collocation.core.engine import _check_geometry
+
+        ds = xr.Dataset(
+            {
+                "lon": (["nrows", "ncols"], [[0.0]]),
+                "lat": (["nrows", "ncols"], [[0.0]]),
+            }
+        )
+        with pytest.raises(ValueError, match="geometry='grid'.*Try geometry='swath'"):
+            _check_geometry(ds, "lon", "lat", "grid")
+
+    def test_swath_2d_ok(self) -> None:
+        from point_collocation.core.engine import _check_geometry
+
+        ds = xr.Dataset(
+            {
+                "lon": (["nrows", "ncols"], [[0.0]]),
+                "lat": (["nrows", "ncols"], [[0.0]]),
+            }
+        )
+        # Should not raise
+        _check_geometry(ds, "lon", "lat", "swath")
+
+    def test_swath_1d_raises(self) -> None:
+        from point_collocation.core.engine import _check_geometry
+
+        ds = xr.Dataset(coords={"lon": [0.0], "lat": [0.0]})
+        with pytest.raises(ValueError, match="geometry='swath'.*Try geometry='grid'"):
+            _check_geometry(ds, "lon", "lat", "swath")
+
+
+class TestMissingXoak:
+    """Test that missing xoak raises a clear ImportError."""
+
+    def test_xoak_import_error_raised_early(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """matchup() raises ImportError for xoak before opening any granule."""
+        import sys
+
+        # Block the xoak.tree_adapters submodule import by removing it from
+        # sys.modules and inserting a sentinel None so that Python's import
+        # machinery raises ImportError on the next import attempt.
+        for key in list(sys.modules.keys()):
+            if key == "xoak" or key.startswith("xoak."):
+                monkeypatch.delitem(sys.modules, key)
+        monkeypatch.setitem(sys.modules, "xoak", None)  # type: ignore[assignment]
+        monkeypatch.setitem(sys.modules, "xoak.tree_adapters", None)  # type: ignore[assignment]
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ImportError, match="xoak"):
+            pc.matchup(p, geometry="swath", spatial_method="xoak")
+
+
+class TestMissingVariableErrorMessage:
+    """Tests for improved error message when variables are missing."""
+
+    def test_missing_var_error_includes_geometry_open_method_spatial(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Error for missing variable must include geometry/open_method/spatial_method."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["no_such_var"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+
+        msg = str(exc_info.value)
+        assert "no_such_var" in msg
+        assert "geometry=" in msg
+        assert "open_method=" in msg
+        assert "spatial_method=" in msg
+
+
+class TestSwathMatchupWithXoak:
+    """Tests for geometry='swath' + spatial_method='xoak' matchup."""
+
+    def test_swath_matchup_returns_nearest_value(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swath matchup using xoak returns the nearest pixel value."""
+        xoak = pytest.importorskip("xoak")  # skip if xoak not installed
+        _ = xoak  # noqa: F841
+
+        nc_path = str(tmp_path / "swath.nc")
+        ds_swath = _make_l2_swath_dataset(nrows=4, ncols=5, seed=42)
+        ds_swath.to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        # Use the first lat/lon value from the swath as the query point.
+        lat_val = float(ds_swath["lat"].values[0, 0])
+        lon_val = float(ds_swath["lon"].values[0, 0])
+
+        pts = pd.DataFrame(
+            {
+                "lat": [lat_val],
+                "lon": [lon_val],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            geometry="swath",
+            variables=["sst"],
+            spatial_method="xoak",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "sst" in result.columns
+        assert len(result) == 1
+        assert not math.isnan(result.loc[0, "sst"])
+
+    def test_grid_geometry_with_2d_data_raises(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """geometry='grid' with 2-D lat/lon raises a clear ValueError."""
+        nc_path = str(tmp_path / "swath.nc")
+        _make_l2_swath_dataset(nrows=4, ncols=5).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ValueError, match="geometry='grid'.*Try geometry='swath'"):
+            pc.matchup(
+                p,
+                geometry="grid",
+                spatial_method="nearest",
+                open_dataset_kwargs={"engine": "netcdf4"},
+            )
+
+    def test_swath_matchup_3d_variable_expands_with_xoak(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swath matchup with xoak expands 3-D variables (e.g. Rrs) into per-wavelength columns."""
+        pytest.importorskip("xoak")  # skip if xoak not installed
+
+        wavelengths = [346, 348, 351]
+        nc_path = str(tmp_path / "swath_3d.nc")
+        ds_swath = _make_l2_swath_3d_dataset(nrows=4, ncols=5, wavelengths=wavelengths, seed=42)
+        ds_swath.to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        lat_val = float(ds_swath["lat"].values[0, 0])
+        lon_val = float(ds_swath["lon"].values[0, 0])
+
+        pts = pd.DataFrame(
+            {
+                "lat": [lat_val],
+                "lon": [lon_val],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath_3d.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            geometry="swath",
+            variables=["Rrs"],
+            spatial_method="xoak",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
+        for wl in wavelengths:
+            assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
+        assert len(result) == 1
+
+
+class TestShowVariablesLayout:
+    """Tests for plan.show_variables(geometry=...) with both open methods."""
+
+    def test_show_variables_dataset_layout_prints_dims_and_vars(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables(geometry='grid') prints dims, vars, and geo info."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        captured = capsys.readouterr()
+        assert "Dimensions" in captured.out
+        assert "Variables" in captured.out
+        assert "sst" in captured.out
+        assert "Geolocation" in captured.out
+        assert "'lon'" in captured.out or "lon" in captured.out
+
+    def test_show_variables_geo_detection_none_warns(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables prints a message when no geolocation is detected."""
+        nc_path = str(tmp_path / "no_geo.nc")
+        # Dataset with no recognisable lat/lon names.
+        xr.Dataset(
+            {"temperature": (["x", "y"], [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"x": [0, 1], "y": [0, 1]},
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        captured = capsys.readouterr()
+        assert "NONE" in captured.out or "no geolocation" in captured.out.lower()

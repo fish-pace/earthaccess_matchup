@@ -63,7 +63,7 @@ class MatchupReport:
     --------
     ::
 
-        out, report = pc.matchup(..., return_diagnostics=True)
+        report = MatchupReport()
         print(report.summary())
     """
 
