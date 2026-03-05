@@ -10,7 +10,7 @@ cd earthaccess_matchup
 pip install -e ".[earthaccess,swath,dev]"
 ```
 
-Install additional test dependencies required by some test modules:
+Install additional test dependencies required by some test modules (e.g. `test_adapters.py` needs `netcdf4`; `h5netcdf` and `dask` are used by integration tests):
 
 ```bash
 pip install netcdf4 h5netcdf dask

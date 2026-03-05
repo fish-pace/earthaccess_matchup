@@ -25,7 +25,7 @@ df_points = pd.DataFrame({
 })
 ```
 
-You can use a `date` column instead of `time`; time-of-day is then set to noon (12:00 UTC).
+You can use a `date` column instead of `time`; this is handled automatically — the time-of-day is set to noon (12:00 UTC) so that date-only inputs match the correct granule.
 
 ## 3. Build a plan
 
