@@ -527,9 +527,18 @@ def _extract_xoak(
         for var in variables:
             try:
                 # sel(..., method='nearest') returns a 1-element array per query
-                # point; .flat[0] safely extracts the scalar regardless of dims.
-                val = selected[var].values.flat[0]
-                row[var] = float(val)
+                # point; squeeze out that query dimension so that 2-D spatial
+                # variables become scalar (0-D) and 3-D variables (e.g. Rrs with
+                # a wavelength dimension) become 1-D.
+                squeezed = selected[var].squeeze()
+                if squeezed.ndim == 0:
+                    row[var] = float(squeezed)
+                else:
+                    # Additional dimensions remain (e.g. wavelength) — expand
+                    # into coord-keyed columns (Rrs_346, Rrs_348, …).
+                    row[var] = float("nan")  # placeholder; removed later
+                    for coord_val, val in squeezed.to_series().items():
+                        row[f"{var}_{int(coord_val)}"] = float(val)
             except Exception:
                 row[var] = float("nan")
     except Exception:

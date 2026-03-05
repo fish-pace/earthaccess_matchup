@@ -2326,6 +2326,30 @@ def _make_l2_swath_dataset(
     )
 
 
+def _make_l2_swath_3d_dataset(
+    nrows: int = 3,
+    ncols: int = 4,
+    wavelengths: list[int] | None = None,
+    seed: int = 0,
+) -> xr.Dataset:
+    """Synthetic L2 swath dataset with 2-D lat/lon and a 3-D variable (wavelength)."""
+    if wavelengths is None:
+        wavelengths = [346, 348, 351]
+    rng = np.random.default_rng(seed)
+    lat = rng.uniform(-10.0, 10.0, (nrows, ncols)).astype(np.float32)
+    lon = rng.uniform(-30.0, 30.0, (nrows, ncols)).astype(np.float32)
+    nwl = len(wavelengths)
+    rrs = rng.uniform(0.0, 0.1, (nrows, ncols, nwl)).astype(np.float32)
+    return xr.Dataset(
+        {
+            "lat": (["nrows", "ncols"], lat),
+            "lon": (["nrows", "ncols"], lon),
+            "Rrs": (["nrows", "ncols", "wavelength_3d"], rrs),
+        },
+        coords={"wavelength_3d": wavelengths},
+    )
+
+
 class TestGeometryParameter:
     """Tests for the required geometry parameter in pc.matchup()."""
 
@@ -2669,6 +2693,60 @@ class TestSwathMatchupWithXoak:
                 spatial_method="nearest",
                 open_dataset_kwargs={"engine": "netcdf4"},
             )
+
+    def test_swath_matchup_3d_variable_expands_with_xoak(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swath matchup with xoak expands 3-D variables (e.g. Rrs) into per-wavelength columns."""
+        pytest.importorskip("xoak")  # skip if xoak not installed
+
+        wavelengths = [346, 348, 351]
+        nc_path = str(tmp_path / "swath_3d.nc")
+        ds_swath = _make_l2_swath_3d_dataset(nrows=4, ncols=5, wavelengths=wavelengths, seed=42)
+        ds_swath.to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        lat_val = float(ds_swath["lat"].values[0, 0])
+        lon_val = float(ds_swath["lon"].values[0, 0])
+
+        pts = pd.DataFrame(
+            {
+                "lat": [lat_val],
+                "lon": [lon_val],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath_3d.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            geometry="swath",
+            variables=["Rrs"],
+            spatial_method="xoak",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
+        for wl in wavelengths:
+            assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
+        assert len(result) == 1
 
 
 class TestShowVariablesLayout:
