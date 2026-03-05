@@ -548,6 +548,196 @@ class TestPlanMapping:
 
 
 # ---------------------------------------------------------------------------
+# granule_name post-search filtering
+# ---------------------------------------------------------------------------
+
+def _make_result_with_links(
+    *,
+    begin: str,
+    end: str,
+    data_url: str = "https://example.com/granule.nc",
+) -> MagicMock:
+    """Build a mock earthaccess result that supports both dict-access and data_links()."""
+    mock_result = MagicMock()
+    # Support dict-like access for _get_umm (result["umm"])
+    mock_result.__getitem__ = lambda _, key: {
+        "umm": {
+            "TemporalExtent": {
+                "RangeDateTime": {
+                    "BeginningDateTime": begin,
+                    "EndingDateTime": end,
+                }
+            },
+            "SpatialExtent": {
+                "HorizontalSpatialDomain": {
+                    "Geometry": {
+                        "BoundingRectangles": [
+                            {
+                                "WestBoundingCoordinate": -180.0,
+                                "SouthBoundingCoordinate": -90.0,
+                                "EastBoundingCoordinate": 180.0,
+                                "NorthBoundingCoordinate": 90.0,
+                            }
+                        ]
+                    }
+                }
+            },
+            "RelatedUrls": [{"Type": "GET DATA", "URL": data_url}],
+        }
+    }[key]
+    mock_result.data_links.return_value = [data_url]
+    return mock_result
+
+
+class TestGranuleNameFiltering:
+    """Tests for granule_name post-search filtering in _search_earthaccess."""
+
+    def _run_plan_with_links(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        points: pd.DataFrame,
+        fake_results: list[Any],
+        granule_name: str | None = None,
+    ) -> Plan:
+        mock_ea = MagicMock()
+        mock_ea.search_data.return_value = fake_results
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        source_kwargs: dict[str, Any] = {"short_name": "TEST"}
+        if granule_name is not None:
+            source_kwargs["granule_name"] = granule_name
+        return plan(points, source_kwargs=source_kwargs)
+
+    def test_granule_name_not_passed_to_search_data(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_name must be stripped from the kwargs sent to earthaccess.search_data."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        result = _make_result_with_links(
+            begin="2023-06-01T00:00:00Z",
+            end="2023-06-01T23:59:59Z",
+            data_url="https://example.com/PROD.DAY.RRS.4km.nc",
+        )
+        mock_ea = MagicMock()
+        mock_ea.search_data.return_value = [result]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        plan(
+            pts,
+            source_kwargs={"short_name": "TEST", "granule_name": "*.DAY.*.4km.*"},
+        )
+
+        call_kwargs = mock_ea.search_data.call_args[1]
+        assert "granule_name" not in call_kwargs
+
+    def test_granule_name_filters_matching_results(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only results whose data_links() match the granule_name pattern are kept."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        matching = _make_result_with_links(
+            begin="2023-06-01T00:00:00Z",
+            end="2023-06-01T23:59:59Z",
+            data_url="https://example.com/PROD.DAY.RRS.4km.nc",
+        )
+        non_matching = _make_result_with_links(
+            begin="2023-06-01T00:00:00Z",
+            end="2023-06-01T23:59:59Z",
+            data_url="https://example.com/PROD.MO.RRS.4km.nc",
+        )
+        p = self._run_plan_with_links(
+            monkeypatch,
+            pts,
+            [matching, non_matching],
+            granule_name="*.DAY.*",
+        )
+        assert len(p.results) == 1
+        assert len(p.granules) == 1
+
+    def test_granule_name_excludes_all_when_no_match(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no results match the pattern, results and granules are empty."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        result = _make_result_with_links(
+            begin="2023-06-01T00:00:00Z",
+            end="2023-06-01T23:59:59Z",
+            data_url="https://example.com/PROD.MO.RRS.4km.nc",
+        )
+        p = self._run_plan_with_links(
+            monkeypatch, pts, [result], granule_name="*.DAY.*"
+        )
+        assert p.results == []
+        assert p.granules == []
+
+    def test_granule_name_keeps_all_when_all_match(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When all results match, all are kept."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        results = [
+            _make_result_with_links(
+                begin="2023-06-01T00:00:00Z",
+                end="2023-06-01T23:59:59Z",
+                data_url=f"https://example.com/PROD.DAY.RRS.4km.{i}.nc",
+            )
+            for i in range(3)
+        ]
+        p = self._run_plan_with_links(
+            monkeypatch, pts, results, granule_name="*.DAY.*"
+        )
+        assert len(p.results) == 3
+        assert len(p.granules) == 3
+
+    def test_without_granule_name_no_filtering(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When granule_name is absent, all search results are kept unchanged."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        results = [
+            _make_result_with_links(
+                begin="2023-06-01T00:00:00Z",
+                end="2023-06-01T23:59:59Z",
+                data_url=f"https://example.com/granule_{i}.nc",
+            )
+            for i in range(3)
+        ]
+        p = self._run_plan_with_links(monkeypatch, pts, results, granule_name=None)
+        assert len(p.results) == 3
+
+    def test_granule_name_stored_in_source_kwargs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_name is stored in Plan.source_kwargs even though it's not sent to search_data."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        result = _make_result_with_links(
+            begin="2023-06-01T00:00:00Z",
+            end="2023-06-01T23:59:59Z",
+            data_url="https://example.com/PROD.DAY.RRS.4km.nc",
+        )
+        mock_ea = MagicMock()
+        mock_ea.search_data.return_value = [result]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        p = plan(
+            pts,
+            source_kwargs={"short_name": "TEST", "granule_name": "*.DAY.*"},
+        )
+        assert p.source_kwargs.get("granule_name") == "*.DAY.*"
+
+
+# ---------------------------------------------------------------------------
 # Plan.summary()
 # ---------------------------------------------------------------------------
 
