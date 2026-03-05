@@ -275,17 +275,25 @@ class Plan:
 
     def show_variables(
         self,
+        layout: str = "dataset",
         open_dataset_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Open the first granule and print its dimensions and variables.
 
-        Uses :meth:`open_dataset` to load the first result in the plan,
-        then prints the dataset dimensions and data variable names.  This
-        lets users discover available variable names before running a full
+        Uses :meth:`open_dataset` (or a DataTree for ``layout="datatree-merge"``)
+        to load the first result in the plan, then prints the dataset
+        dimensions, data variable names, and geolocation detection results.
+        This lets users discover available variable names before running a full
         :func:`~point_collocation.matchup`.
 
         Parameters
         ----------
+        layout:
+            How to open the granule.  ``"dataset"`` uses a plain
+            ``xarray.open_dataset`` call.  ``"datatree-merge"`` opens as a
+            DataTree, prints all group paths and their variables, then merges
+            into a flat dataset for geolocation detection.  Defaults to
+            ``"dataset"``.
         open_dataset_kwargs:
             Keyword arguments forwarded to ``xarray.open_dataset`` when
             opening the first granule.  Passed unchanged to
@@ -296,12 +304,103 @@ class Plan:
         ValueError
             If the plan contains no granules.
         """
+        from point_collocation.core.engine import (
+            _GEOLOC_PAIRS,
+            _find_geoloc_pair,
+            _merge_datatree,
+            _open_datatree,
+        )
+
         if not self.results:
             raise ValueError("No granules in plan — cannot show variables.")
 
-        with self.open_dataset(self.results[0], open_dataset_kwargs=open_dataset_kwargs) as ds:
-            print(f"Dimensions : {dict(ds.sizes)}")
-            print(f"Variables  : {list(ds.data_vars)}")
+        import xarray as xr
+
+        kwargs: dict[str, Any] = {"chunks": {}, **(open_dataset_kwargs or {})}
+        if "engine" not in kwargs:
+            kwargs["engine"] = "h5netcdf"
+
+        try:
+            import earthaccess  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "The 'earthaccess' package is required. "
+                "Install it with: pip install earthaccess"
+            ) from exc
+
+        file_objs = earthaccess.open([self.results[0]], pqdm_kwargs={"disable": True})
+        if len(file_objs) != 1:
+            raise RuntimeError(
+                f"Expected 1 file object from earthaccess.open, got {len(file_objs)}."
+            )
+        file_obj = file_objs[0]
+
+        print(f"layout        : {layout!r}")
+
+        if layout == "datatree-merge":
+            # Open as DataTree and show group structure.
+            dt = _open_datatree(file_obj, kwargs)
+
+            # Print group paths and their variables.
+            print("\nDataTree groups:")
+            try:
+                # xarray DataTree API (>= 2024.x).
+                for node in dt.subtree:  # type: ignore[union-attr]
+                    path = node.path if hasattr(node, "path") else str(node.name)
+                    ds_node = node.ds
+                    if ds_node is not None:
+                        dims_str = dict(ds_node.sizes)
+                        vars_list = list(ds_node.data_vars)
+                        print(f"  {path or '/'}")
+                        print(f"    Dimensions : {dims_str}")
+                        print(f"    Variables  : {vars_list}")
+            except AttributeError:
+                # datatree package API.
+                for path, node in dt.items():  # type: ignore[union-attr]
+                    ds_node = node.ds
+                    if ds_node is not None:
+                        dims_str = dict(ds_node.sizes)
+                        vars_list = list(ds_node.data_vars)
+                        print(f"  {path or '/'}")
+                        print(f"    Dimensions : {dims_str}")
+                        print(f"    Variables  : {vars_list}")
+
+            # Merge into flat dataset for geolocation detection.
+            ds_flat = _merge_datatree(dt)
+            print("\nMerged dataset:")
+        else:
+            ds_flat = xr.open_dataset(file_obj, **kwargs)  # type: ignore[arg-type]
+            print(f"Dimensions : {dict(ds_flat.sizes)}")
+            print(f"Variables  : {list(ds_flat.data_vars)}")
+
+        # Geolocation detection results.
+        found_pairs: list[tuple[str, str]] = []
+        for lon_name, lat_name in _GEOLOC_PAIRS:
+            has_lon = lon_name in ds_flat.coords or lon_name in ds_flat.data_vars
+            has_lat = lat_name in ds_flat.coords or lat_name in ds_flat.data_vars
+            if has_lon and has_lat:
+                found_pairs.append((lon_name, lat_name))
+
+        if layout == "datatree-merge":
+            print(f"  Dimensions : {dict(ds_flat.sizes)}")
+            print(f"  Variables  : {list(ds_flat.data_vars)}")
+
+        if len(found_pairs) == 0:
+            print(
+                "\nGeolocation: NONE detected. "
+                "Try plan.show_variables(layout='dataset') and/or "
+                "plan.show_variables(layout='datatree-merge')."
+            )
+        elif len(found_pairs) == 1:
+            lon_n, lat_n = found_pairs[0]
+            lon_var = ds_flat.coords[lon_n] if lon_n in ds_flat.coords else ds_flat[lon_n]
+            lat_var = ds_flat.coords[lat_n] if lat_n in ds_flat.coords else ds_flat[lat_n]
+            print(
+                f"\nGeolocation: ({lon_n!r}, {lat_n!r}) — "
+                f"lon dims={tuple(lon_var.dims)}, lat dims={tuple(lat_var.dims)}"
+            )
+        else:
+            print(f"\nGeolocation: ambiguous — detected pairs: {found_pairs}")
 
     # ------------------------------------------------------------------
     # Summary
