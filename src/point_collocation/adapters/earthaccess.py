@@ -11,15 +11,15 @@ Usage
     import earthaccess
     import point_collocation as pc
 
-    out = pc.matchup(
+    plan = pc.plan(
         df_points,
         data_source="earthaccess",
         source_kwargs={
             "short_name": "PACE_OCI_L3M_RRS",
             "granule_name": "*.DAY.*.4km.*",
         },
-        variables=["Rrs"],
     )
+    out = pc.matchup(plan, geometry="grid", variables=["Rrs"])
 
 Responsibilities
 ----------------

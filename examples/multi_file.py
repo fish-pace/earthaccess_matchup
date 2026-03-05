@@ -13,8 +13,6 @@ What it shows
 * Points spread across multiple dates in a single ``pc.matchup()`` call.
 * The engine queries earthaccess once per unique date, so only the
   granules needed for the requested points are opened.
-* Using ``return_diagnostics=True`` to inspect timing and per-granule
-  results.
 * Requires earthdata authentication (``earthaccess.login()``).
 """
 
@@ -57,32 +55,28 @@ print(df_points.to_string(index=False))
 print()
 
 # ---------------------------------------------------------------------------
-# 2. Run matchup with diagnostics enabled.
+# 2. Build a plan and run matchup.
 #    source_kwargs are forwarded directly to earthaccess.search_data().
 # ---------------------------------------------------------------------------
-result, report = pc.matchup(
+plan = pc.plan(
     df_points,
     data_source="earthaccess",
     source_kwargs={
         "short_name": "PACE_OCI_L3M_RRS",
         "granule_name": "*.DAY.*.4km.*",
     },
+)
+
+result = pc.matchup(
+    plan,
+    geometry="grid",
     variables=["Rrs"],
-    return_diagnostics=True,
 )
 
 # ---------------------------------------------------------------------------
-# 3. Inspect results and diagnostics.
+# 3. Inspect results.
 # ---------------------------------------------------------------------------
 print("Matchup result (first few Rrs columns):")
 rrs_cols = [c for c in result.columns if c.startswith("Rrs_")][:5]
 print(result[["lat", "lon", "time", "label"] + rrs_cols].to_string(index=False))
 print()
-print("Diagnostics summary:")
-print(f"  {report.summary()}")
-print()
-print("Per-granule breakdown:")
-for g in report.granules:
-    status = "OK" if g.succeeded else f"ERROR: {g.error}"
-    print(f"  [{status}] {g.granule_id}")
-    print(f"           found={g.variables_found}  missing={g.variables_missing}")

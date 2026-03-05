@@ -128,7 +128,7 @@ class Plan:
               filtered and re-indexed accordingly.  This allows users to
               test a subset of a large plan::
 
-                  res = pc.matchup(plan[0:10], variables=["avw"])
+                  res = pc.matchup(plan[0:10], geometry="grid", variables=["avw"])
         """
         if isinstance(idx, int):
             return self.results[idx]
