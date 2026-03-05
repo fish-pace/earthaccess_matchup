@@ -1545,7 +1545,7 @@ class TestPlanOpenDataset:
 
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
-        mock_mfdataset.assert_called_once_with([nc_a, nc_b], engine="netcdf4")
+        mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
 
     def test_open_mfdataset_accepts_subset_plan(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -1607,11 +1607,7 @@ class TestPlanOpenDataset:
 
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
-        mock_mfdataset.assert_called_once_with([nc_a, nc_b], engine="netcdf4")
-
-
-# ---------------------------------------------------------------------------
-# Task 3: Plan.show_variables()
+        mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
 # ---------------------------------------------------------------------------
 
 class TestPlanShowVariables:
