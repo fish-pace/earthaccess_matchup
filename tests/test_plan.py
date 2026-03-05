@@ -2356,8 +2356,14 @@ class TestMissingXoak:
         """matchup() raises ImportError for xoak before opening any granule."""
         import sys
 
-        # Remove xoak from sys.modules if present and block import.
+        # Block the xoak.tree_adapters submodule import by removing it from
+        # sys.modules and inserting a sentinel None so that Python's import
+        # machinery raises ImportError on the next import attempt.
+        for key in list(sys.modules.keys()):
+            if key == "xoak" or key.startswith("xoak."):
+                monkeypatch.delitem(sys.modules, key)
         monkeypatch.setitem(sys.modules, "xoak", None)  # type: ignore[assignment]
+        monkeypatch.setitem(sys.modules, "xoak.tree_adapters", None)  # type: ignore[assignment]
 
         pts = pd.DataFrame(
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}

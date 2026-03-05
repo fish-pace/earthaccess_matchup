@@ -492,15 +492,12 @@ def _extract_xoak(
 
     # Compute coordinate arrays if they are lazy (dask) — building a k-d
     # tree requires all values to be in memory.
-    ds_work = ds.copy()
-    if lat_name in ds_work.coords:
-        lat_arr = ds_work.coords[lat_name]
-        if hasattr(lat_arr, "compute"):
-            ds_work[lat_name] = lat_arr.compute()
-    if lon_name in ds_work.coords:
-        lon_arr = ds_work.coords[lon_name]
-        if hasattr(lon_arr, "compute"):
-            ds_work[lon_name] = lon_arr.compute()
+    # Use a shallow copy so we only copy metadata, not data arrays.
+    ds_work = ds.copy(deep=False)
+    if lat_name in ds_work.coords and hasattr(ds_work.coords[lat_name].data, "compute"):
+        ds_work[lat_name] = ds_work.coords[lat_name].compute()
+    if lon_name in ds_work.coords and hasattr(ds_work.coords[lon_name].data, "compute"):
+        ds_work[lon_name] = ds_work.coords[lon_name].compute()
 
     # Build the NDPointIndex using the sklearn k-d tree adapter.
     indexed_ds = ds_work.set_xindex(
@@ -524,6 +521,8 @@ def _extract_xoak(
         )
         for var in variables:
             try:
+                # sel(..., method='nearest') returns a 1-element array per query
+                # point; .flat[0] safely extracts the scalar regardless of dims.
                 val = selected[var].values.flat[0]
                 row[var] = float(val)
             except Exception:

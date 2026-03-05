@@ -386,10 +386,14 @@ class Plan:
             print(f"  Variables  : {list(ds_flat.data_vars)}")
 
         if len(found_pairs) == 0:
+            alt = (
+                "plan.show_variables(layout='datatree-merge')"
+                if layout == "dataset"
+                else "plan.show_variables(layout='dataset')"
+            )
             print(
-                "\nGeolocation: NONE detected. "
-                "Try plan.show_variables(layout='dataset') and/or "
-                "plan.show_variables(layout='datatree-merge')."
+                f"\nGeolocation: NONE detected with layout={layout!r}. "
+                f"Try {alt}."
             )
         elif len(found_pairs) == 1:
             lon_n, lat_n = found_pairs[0]
