@@ -24,6 +24,11 @@ dev = [
     "ruff",
     "mypy",
 ]
+docs = [
+    "mkdocs>=1.5,<2.0",
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+]
 all = [
     "point-collocation[earthaccess,swath,dev]",
 ]

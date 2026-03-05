@@ -26,3 +26,6 @@ htmlcov/
 examples/fixtures/*.nc
 
 *-checkpoint*
+
+# MkDocs build output
+site/
