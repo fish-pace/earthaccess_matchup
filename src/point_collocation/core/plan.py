@@ -192,8 +192,9 @@ class Plan:
             ``plan[n]``.
         open_dataset_kwargs:
             Keyword arguments forwarded to ``xarray.open_dataset``.
-            Defaults to ``{"chunks": {}}`` (lazy/dask loading).
-            ``engine`` defaults to ``"h5netcdf"`` when not specified.
+            ``chunks`` defaults to ``{}`` (lazy/dask loading) unless
+            explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
+            when not specified.
 
         Returns
         -------
@@ -209,7 +210,7 @@ class Plan:
 
         import xarray as xr
 
-        kwargs = {"chunks": {}} if open_dataset_kwargs is None else dict(open_dataset_kwargs)
+        kwargs = {"chunks": {}, **(open_dataset_kwargs or {})}
         if "engine" not in kwargs:
             kwargs["engine"] = "h5netcdf"
 
@@ -235,8 +236,9 @@ class Plan:
             ``results`` attribute is used.
         open_dataset_kwargs:
             Keyword arguments forwarded to ``xarray.open_mfdataset``.
-            Defaults to ``{"chunks": {}}`` (lazy/dask loading).
-            ``engine`` defaults to ``"h5netcdf"`` when not specified.
+            ``chunks`` defaults to ``{}`` (lazy/dask loading) unless
+            explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
+            when not specified.
 
         Returns
         -------
@@ -252,7 +254,7 @@ class Plan:
 
         import xarray as xr
 
-        kwargs = {"chunks": {}} if open_dataset_kwargs is None else dict(open_dataset_kwargs)
+        kwargs = {"chunks": {}, **(open_dataset_kwargs or {})}
         if "engine" not in kwargs:
             kwargs["engine"] = "h5netcdf"
 

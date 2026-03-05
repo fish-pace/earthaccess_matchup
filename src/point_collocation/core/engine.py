@@ -62,9 +62,9 @@ def matchup(
     open_dataset_kwargs:
         Optional dictionary of keyword arguments forwarded to
         ``xarray.open_dataset`` for every granule opened during the run.
-        Defaults to ``{"chunks": {}}`` (lazy/dask loading) when not
-        provided.  ``engine`` defaults to ``"h5netcdf"`` when no
-        ``engine`` key is present in the dict.
+        ``chunks`` defaults to ``{}`` (lazy/dask loading) unless
+        explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
+        when no ``engine`` key is present in the dict.
 
     Returns
     -------
@@ -79,7 +79,7 @@ def matchup(
         If a requested variable is not present in an opened dataset.
     """
     effective_vars: list[str] = variables if variables is not None else plan.variables
-    effective_kwargs = {"chunks": {}} if open_dataset_kwargs is None else dict(open_dataset_kwargs)
+    effective_kwargs = {"chunks": {}, **(open_dataset_kwargs or {})}
     return _execute_plan(plan, variables=effective_vars, **effective_kwargs)
 
 
