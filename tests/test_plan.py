@@ -1820,8 +1820,11 @@ class TestMatchupWithPlan:
             save_dir=save_dir,
         )
 
-        parquet_files = list(save_dir.glob("plan_*.parquet"))
+        parquet_files = sorted(save_dir.glob("plan_*.parquet"))
         assert len(parquet_files) == 2, f"Expected 2 parquet files, got {len(parquet_files)}"
+        # File names must use 1-based granule numbers matching the progress messages.
+        assert parquet_files[0].name == "plan_1_1.parquet"
+        assert parquet_files[1].name == "plan_2_2.parquet"
 
     def test_matchup_save_dir_parquet_content_matches_result(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

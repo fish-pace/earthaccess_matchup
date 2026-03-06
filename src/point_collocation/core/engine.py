@@ -496,8 +496,6 @@ def _execute_plan(
 
         batch_matched_points = 0
         batch_rows: list[dict] = []
-        batch_first_g_idx = batch_items[0][0]
-        batch_last_g_idx = batch_items[-1][0]
 
         for batch_pos, (g_idx, pt_indices) in enumerate(batch_items):
             gm = plan.granules[g_idx]
@@ -566,7 +564,7 @@ def _execute_plan(
             )
         if save_path is not None and batch_rows:
             batch_df = pd.DataFrame(batch_rows)
-            parquet_name = f"plan_{batch_first_g_idx}_{batch_last_g_idx}.parquet"
+            parquet_name = f"plan_{batch_start}_{batch_end}.parquet"
             batch_df.to_parquet(save_path / parquet_name, index=False)
 
         # Release all file handles for this batch so the OS can reclaim memory
