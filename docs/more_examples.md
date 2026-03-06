@@ -37,7 +37,7 @@ p.show_variables(geometry="swath")
 out = pc.matchup(
     p,
     geometry="swath",
-    variables=["Rrs_443", "Rrs_555"],
+    variables=["Rrs"],
 )
 print(out)
 ```
@@ -85,7 +85,7 @@ Run a quick test on the first few points before committing to the full matchup:
 
 ```python
 # Test on the first 5 points only
-out_test = pc.matchup(p[0:5], geometry="grid", variables=["Rrs_443"])
+out_test = pc.matchup(p[0:5], geometry="grid", variables=["Rrs"])
 print(out_test)
 ```
 

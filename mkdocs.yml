@@ -27,7 +27,9 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Quickstart: quickstart.md
-  - More Examples: more_examples.md
+  - More Examples:
+    - L3 Gridded Data: l3_examples.md
+    - L2 Swath Data: l2_examples.md
   - API Reference: api.md
   - Contributing: contributing.md
   - Releasing: releasing.md

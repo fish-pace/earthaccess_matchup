@@ -32,11 +32,12 @@ df = pd.DataFrame({
 
 p = pc.plan(
     df,
+    data_source="earthaccess",
     source_kwargs={"short_name": "PACE_OCI_L3M_RRS", "granule_name": "*.DAY.*.4km.*"},
 )
 p.summary()
 
-out = pc.matchup(p, geometry="grid", variables=["Rrs_443"])
+out = pc.matchup(p, geometry="grid", variables=["Rrs"])
 print(out)
 ```
 
