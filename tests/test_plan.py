@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import math
 import pathlib
+import re
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
@@ -1932,6 +1933,7 @@ class TestMatchupWithPlan:
             assert "granules" in line
             assert "of 3 processed" in line
             assert "points matched" in line
+            assert re.search(r"\d{2}:\d{2}:\d{2}$", line), f"Expected HH:MM:SS at end of: {line!r}"
 
     def test_matchup_save_dir_creates_directory_if_missing(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

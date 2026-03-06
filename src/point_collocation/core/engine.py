@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import time
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -476,6 +477,7 @@ def _execute_plan(
 
     total_granules = len(sorted_granule_items)
     granules_processed = 0
+    start_time = time.monotonic()
 
     # Process granules in batches.  We open only the files needed for each
     # batch so that file handles from previous batches can be released by the
@@ -558,9 +560,13 @@ def _execute_plan(
         batch_start = batch_offset + 1 + granule_offset
         batch_end = granules_processed + granule_offset
         if not silent:
+            elapsed = int(time.monotonic() - start_time)
+            hh, remainder = divmod(elapsed, 3600)
+            mm, ss = divmod(remainder, 60)
             print(
                 f"granules {batch_start}-{batch_end} of {total_granules_all} processed, "
-                f"{batch_matched_points} points matched"
+                f"{batch_matched_points} points matched, "
+                f"{hh:02d}:{mm:02d}:{ss:02d}"
             )
         if save_path is not None and batch_rows:
             batch_df = pd.DataFrame(batch_rows)
