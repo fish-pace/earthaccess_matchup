@@ -41,13 +41,7 @@ jobs:
         run: pip install ".[docs]"
 
       - name: Generate docs from notebooks
-        run: |
-          jupyter nbconvert --to markdown examples/docs_quickstart.ipynb \
-            --output quickstart --output-dir docs/
-          jupyter nbconvert --to markdown examples/docs_l3_examples.ipynb \
-            --output l3_examples --output-dir docs/
-          jupyter nbconvert --to markdown examples/docs_l2_examples.ipynb \
-            --output l2_examples --output-dir docs/
+        run: python scripts/generate_examples.py
 
       - name: Build docs
         run: mkdocs build
