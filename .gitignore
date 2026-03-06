@@ -24,6 +24,7 @@ htmlcov/
 
 # Generated example fixture files
 examples/fixtures/*.nc
+examples/_temp_data
 
 *-checkpoint*
 
