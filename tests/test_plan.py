@@ -1371,7 +1371,7 @@ class TestMatchupWithPlan:
     def test_matchup_with_plan_calls_open(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """matchup(plan) must call earthaccess.open with plan.results."""
+        """matchup(plan) must call earthaccess.open once per batch with that batch's results."""
         nc_path = str(tmp_path / "AQUA_MODIS.20230601.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
 
@@ -1820,8 +1820,11 @@ class TestMatchupWithPlan:
             save_dir=save_dir,
         )
 
-        parquet_files = list(save_dir.glob("plan_*.parquet"))
+        parquet_files = sorted(save_dir.glob("plan_*.parquet"))
         assert len(parquet_files) == 2, f"Expected 2 parquet files, got {len(parquet_files)}"
+        # File names must use 1-based granule numbers matching the progress messages.
+        assert parquet_files[0].name == "plan_1_1.parquet"
+        assert parquet_files[1].name == "plan_2_2.parquet"
 
     def test_matchup_save_dir_parquet_content_matches_result(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -1955,6 +1958,245 @@ class TestMatchupWithPlan:
         assert not new_dir.exists()
         pc.matchup(p, geometry="grid", silent=True, save_dir=new_dir)
         assert new_dir.exists()
+
+    def test_matchup_opens_files_per_batch_not_all_at_once(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """earthaccess.open must be called once per batch, not once for all granules.
+
+        This is the core memory-management invariant: opening every file upfront
+        causes peak RAM to grow with the total number of granules.  Opening only
+        the batch's files lets the OS reclaim handles between batches.
+        """
+        # Build 3 granule files
+        nc_files = []
+        for i in range(3):
+            nc_path = str(tmp_path / f"g{i}.nc")
+            _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=i).to_netcdf(nc_path)
+            nc_files.append(nc_path)
+
+        open_call_args: list[list] = []
+
+        mock_ea = MagicMock()
+
+        def fake_open(results, **kwargs):
+            open_call_args.append(list(results))
+            # Return one file path per result in this batch
+            return [nc_files[i] for i in range(len(results))]
+
+        mock_ea.open.side_effect = fake_open
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        fake_results = [object(), object(), object()]
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0, 0.0, 0.0],
+                "lon": [0.0, 0.0, 0.0],
+                "time": pd.to_datetime(
+                    ["2023-06-01T12:00:00", "2023-06-02T12:00:00", "2023-06-03T12:00:00"]
+                ),
+            }
+        )
+        granules = [
+            GranuleMeta(
+                granule_id=f"https://example.com/g{i}.nc",
+                begin=pd.Timestamp(f"2023-06-0{i+1}T00:00:00Z"),
+                end=pd.Timestamp(f"2023-06-0{i+1}T23:59:59Z"),
+                bbox=(-180.0, -90.0, 180.0, 90.0),
+                result_index=i,
+            )
+            for i in range(3)
+        ]
+        p = Plan(
+            points=pts,
+            results=fake_results,
+            granules=granules,
+            point_granule_map={0: [0], 1: [1], 2: [2]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        # batch_size=1 → earthaccess.open called 3 times, once per granule
+        pc.matchup(
+            p,
+            geometry="grid",
+            open_dataset_kwargs={"engine": "netcdf4"},
+            silent=True,
+            batch_size=1,
+        )
+
+        assert mock_ea.open.call_count == 3, (
+            "earthaccess.open should be called once per batch, not once for all granules"
+        )
+        # Each call should have received exactly 1 result (batch_size=1)
+        for call_args in open_call_args:
+            assert len(call_args) == 1, (
+                f"each open() call should pass 1 result for batch_size=1, got {len(call_args)}"
+            )
+        # The results passed to each call must be the per-batch results
+        assert open_call_args[0] == [fake_results[0]]
+        assert open_call_args[1] == [fake_results[1]]
+        assert open_call_args[2] == [fake_results[2]]
+
+
+# ---------------------------------------------------------------------------
+# granule_range: crash recovery
+# ---------------------------------------------------------------------------
+
+class TestGranuleRange:
+    """Tests for the granule_range parameter of pc.matchup()."""
+
+    def _make_plan(self, tmp_path: pathlib.Path, n: int = 3) -> tuple["Plan", list[str]]:
+        """Build a Plan with *n* daily granules, one point per granule."""
+        nc_files = []
+        for i in range(n):
+            nc_path = str(tmp_path / f"g{i}.nc")
+            _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=i).to_netcdf(nc_path)
+            nc_files.append(nc_path)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0] * n,
+                "lon": [0.0] * n,
+                "time": pd.to_datetime(
+                    [f"2023-06-{i+1:02d}T12:00:00" for i in range(n)]
+                ),
+            }
+        )
+        granules = [
+            GranuleMeta(
+                granule_id=f"https://example.com/g{i}.nc",
+                begin=pd.Timestamp(f"2023-06-{i+1:02d}T00:00:00Z"),
+                end=pd.Timestamp(f"2023-06-{i+1:02d}T23:59:59Z"),
+                bbox=(-180.0, -90.0, 180.0, 90.0),
+                result_index=i,
+            )
+            for i in range(n)
+        ]
+        fake_results = [object() for _ in range(n)]
+        p = Plan(
+            points=pts,
+            results=fake_results,
+            granules=granules,
+            point_granule_map={i: [i] for i in range(n)},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        return p, nc_files
+
+    def _mock_ea(self, monkeypatch: pytest.MonkeyPatch, nc_files: list[str]) -> MagicMock:
+        """Patch earthaccess so open() returns the right nc file per result index."""
+        mock_ea = MagicMock()
+
+        def fake_open(results, **kwargs):
+            # results are the fake result objects; return nc_files in the same order
+            return [nc_files[i] for i in range(len(results))]
+
+        mock_ea.open.side_effect = fake_open
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        return mock_ea
+
+    def test_granule_range_returns_only_specified_granules(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_range=(2, 3) should return rows for granules 2 and 3 only."""
+        p, nc_files = self._make_plan(tmp_path, n=3)
+        mock_ea = MagicMock()
+
+        open_call_results: list[list] = []
+
+        def fake_open(results, **kwargs):
+            open_call_results.append(list(results))
+            return [nc_files[i] for i in range(len(results))]
+
+        mock_ea.open.side_effect = fake_open
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        df = pc.matchup(
+            p,
+            geometry="grid",
+            open_dataset_kwargs={"engine": "netcdf4"},
+            silent=True,
+            batch_size=10,
+            granule_range=(2, 3),
+        )
+
+        # Only granules 2 and 3 (1-based) → 2 rows (one point each)
+        assert len(df) == 2
+        # earthaccess.open called once with 2 results (granules 2 and 3)
+        assert mock_ea.open.call_count == 1
+        assert len(open_call_results[0]) == 2
+        # The results passed should be for granules at index 1 and 2 (0-based)
+        assert open_call_results[0] == [p.results[1], p.results[2]]
+
+    def test_granule_range_progress_shows_absolute_numbers(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Progress messages must show absolute granule numbers, not relative."""
+        p, nc_files = self._make_plan(tmp_path, n=3)
+        self._mock_ea(monkeypatch, nc_files)
+
+        pc.matchup(
+            p,
+            geometry="grid",
+            open_dataset_kwargs={"engine": "netcdf4"},
+            silent=False,
+            batch_size=1,
+            granule_range=(2, 3),
+        )
+        captured = capsys.readouterr()
+        lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+        # Two batches of 1 granule each → 2 progress lines
+        assert len(lines) == 2
+        # Lines must use absolute numbers (2, 3) and report against the full plan total (3)
+        assert "granules 2-2 of 3 processed" in lines[0]
+        assert "granules 3-3 of 3 processed" in lines[1]
+
+    def test_granule_range_invalid_raises_value_error(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_range values that are invalid raise ValueError."""
+        mock_ea = MagicMock()
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p_no_granules = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        # start > end is caught before execution
+        with pytest.raises(ValueError, match="granule_range"):
+            pc.matchup(p_no_granules, geometry="grid", silent=True, granule_range=(5, 2))
+
+        # start < 1 is caught before execution
+        with pytest.raises(ValueError, match="granule_range"):
+            pc.matchup(p_no_granules, geometry="grid", silent=True, granule_range=(0, 5))
+
+        # start or end exceeds total matched granules (caught at execution time)
+        p_with_granules, nc_files = self._make_plan(tmp_path, n=3)
+        self._mock_ea(monkeypatch, nc_files)
+
+        with pytest.raises(ValueError, match="granule_range"):
+            pc.matchup(
+                p_with_granules,
+                geometry="grid",
+                open_dataset_kwargs={"engine": "netcdf4"},
+                silent=True,
+                granule_range=(2, 10),  # end=10 exceeds 3 matched granules
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,7 @@ def matchup(
     silent: bool = False,
     batch_size: int = 10,
     save_dir: str | os.PathLike | None = None,
+    granule_range: tuple[int, int] | None = None,
 ) -> pd.DataFrame:
     """Extract variables from cloud-hosted granules at the given points.
 
@@ -114,6 +115,16 @@ def matchup(
         saved as ``plan_<first>_<last>.parquet`` where *first* and
         *last* are the granule indices from the plan.  When ``None``
         (default), no intermediate files are written.
+    granule_range:
+        Optional ``(start, end)`` tuple (both **1-based and inclusive**)
+        that restricts processing to a contiguous slice of the matched
+        granules, ordered by granule index.  For example,
+        ``granule_range=(261, 620)`` resumes from granule 261 after a
+        crash that completed granules 1–260.  Progress messages continue
+        to report absolute granule numbers (e.g.
+        "granules 261-270 of 620 processed") so the output is directly
+        comparable with messages from the original run.  When ``None``
+        (default), all matched granules are processed.
 
     Returns
     -------
@@ -132,6 +143,10 @@ def matchup(
         If geolocation variables cannot be detected unambiguously.
     ValueError
         If the geolocation array dimensionality does not match *geometry*.
+    ValueError
+        If ``granule_range`` is not a 2-tuple of positive integers with
+        ``start <= end``, or if either bound exceeds the number of matched
+        granules in the plan.
     ImportError
         If ``spatial_method="xoak"`` and the ``xoak`` package is not
         installed.
@@ -141,6 +156,20 @@ def matchup(
             f"geometry={geometry!r} is not valid. "
             f"Must be one of {sorted(_VALID_GEOMETRIES)}."
         )
+
+    if granule_range is not None:
+        if (
+            len(granule_range) != 2
+            or not isinstance(granule_range[0], int)
+            or not isinstance(granule_range[1], int)
+            or granule_range[0] < 1
+            or granule_range[1] < granule_range[0]
+        ):
+            raise ValueError(
+                f"granule_range={granule_range!r} is not valid. "
+                "Must be a (start, end) tuple of positive integers with start <= end, "
+                "both 1-based and inclusive (e.g. granule_range=(261, 620))."
+            )
 
     # Apply geometry-based defaults.
     if open_method is None:
@@ -180,6 +209,7 @@ def matchup(
         silent=silent,
         batch_size=batch_size,
         save_dir=save_dir,
+        granule_range=granule_range,
         **effective_kwargs,
     )
 
@@ -355,6 +385,7 @@ def _execute_plan(
     silent: bool = False,
     batch_size: int = 10,
     save_dir: str | os.PathLike | None = None,
+    granule_range: tuple[int, int] | None = None,
     **open_dataset_kwargs: object,
 ) -> pd.DataFrame:
     """Execute a :class:`~point_collocation.core.plan.Plan`.
@@ -371,7 +402,13 @@ def _execute_plan(
             "Install it with: pip install earthaccess"
         ) from exc
 
-    opened_files: list[object] = earthaccess.open(plan.results, pqdm_kwargs={"disable": True})
+    # NOTE: We intentionally do NOT call earthaccess.open(plan.results) all at
+    # once here.  Opening every file upfront holds all S3/HTTPS file handles in
+    # memory simultaneously, causing RAM to grow linearly with the number of
+    # granules.  Instead we open only the files needed for each batch below so
+    # that handles from previous batches can be released by the OS, keeping
+    # peak memory proportional to batch_size rather than the total number of
+    # granules.
 
     kwargs = dict(open_dataset_kwargs)
     if "engine" not in kwargs:
@@ -414,94 +451,125 @@ def _execute_plan(
     # Track whether we have already validated geometry on the first granule.
     geometry_checked = False
 
-    # Batch tracking for progress reporting and intermediate saves.
     sorted_granule_items = sorted(granule_to_points.items())
+    # Total matched granules in the full plan — used in progress messages so
+    # that the "of N" counter is always relative to the whole plan, not just
+    # the requested range.
+    total_granules_all = len(sorted_granule_items)
+
+    # Apply granule_range: restrict to a 1-based inclusive slice.
+    granule_offset = 0  # absolute index of the first item in the slice (0-based)
+    if granule_range is not None:
+        range_start, range_end = granule_range
+        if range_start > total_granules_all:
+            raise ValueError(
+                f"granule_range start ({range_start}) exceeds the number of matched "
+                f"granules in the plan ({total_granules_all})."
+            )
+        if range_end > total_granules_all:
+            raise ValueError(
+                f"granule_range end ({range_end}) exceeds the number of matched "
+                f"granules in the plan ({total_granules_all})."
+            )
+        sorted_granule_items = sorted_granule_items[range_start - 1 : range_end]
+        granule_offset = range_start - 1
+
     total_granules = len(sorted_granule_items)
     granules_processed = 0
-    batch_matched_points = 0
-    batch_granule_count = 0
-    batch_rows: list[dict] = []
-    batch_first_g_idx: int | None = None
 
-    # Process granules, opening each file once
-    for g_idx, pt_indices in sorted_granule_items:
-        gm = plan.granules[g_idx]
-        file_obj = opened_files[gm.result_index]
+    # Process granules in batches.  We open only the files needed for each
+    # batch so that file handles from previous batches can be released by the
+    # OS, keeping peak memory proportional to batch_size rather than the total
+    # number of granules.
+    for batch_offset in range(0, total_granules, batch_size):
+        batch_items = sorted_granule_items[batch_offset : batch_offset + batch_size]
 
-        if batch_first_g_idx is None:
-            batch_first_g_idx = g_idx
+        # Collect the earthaccess result objects for this batch (preserving
+        # order) so that opened_batch[i] corresponds to batch_items[i].
+        batch_results = [
+            plan.results[plan.granules[g_idx].result_index]
+            for g_idx, _ in batch_items
+        ]
+        opened_batch: list[object] = earthaccess.open(
+            batch_results, pqdm_kwargs={"disable": True}
+        )
 
-        try:
-            with _open_as_flat_dataset(file_obj, open_method, kwargs) as ds:  # type: ignore[arg-type]
-                lon_name, lat_name = _find_geoloc_pair(ds)
-                ds = _ensure_coords(ds, lon_name, lat_name)
+        batch_matched_points = 0
+        batch_rows: list[dict] = []
 
-                # Validate geometry against actual array dims — once only.
-                if not geometry_checked:
-                    _check_geometry(ds, lon_name, lat_name, geometry)
-                    geometry_checked = True
+        for batch_pos, (g_idx, pt_indices) in enumerate(batch_items):
+            gm = plan.granules[g_idx]
+            file_obj = opened_batch[batch_pos]
 
-                # Validate that all requested variables exist in the dataset.
-                missing_vars = [v for v in variables if v not in ds]
-                if missing_vars:
-                    avail = list(ds.data_vars)
-                    raise ValueError(
-                        f"Variable(s) {missing_vars!r} not found in granule "
-                        f"'{gm.granule_id}'. "
-                        f"geometry={geometry!r}, open_method={open_method!r}, "
-                        f"spatial_method={spatial_method!r}. "
-                        f"Available variables: {avail}. "
-                        "Use plan.show_variables() to inspect the dataset."
-                    )
+            try:
+                with _open_as_flat_dataset(file_obj, open_method, kwargs) as ds:  # type: ignore[arg-type]
+                    lon_name, lat_name = _find_geoloc_pair(ds)
+                    ds = _ensure_coords(ds, lon_name, lat_name)
 
+                    # Validate geometry against actual array dims — once only.
+                    if not geometry_checked:
+                        _check_geometry(ds, lon_name, lat_name, geometry)
+                        geometry_checked = True
+
+                    # Validate that all requested variables exist in the dataset.
+                    missing_vars = [v for v in variables if v not in ds]
+                    if missing_vars:
+                        avail = list(ds.data_vars)
+                        raise ValueError(
+                            f"Variable(s) {missing_vars!r} not found in granule "
+                            f"'{gm.granule_id}'. "
+                            f"geometry={geometry!r}, open_method={open_method!r}, "
+                            f"spatial_method={spatial_method!r}. "
+                            f"Available variables: {avail}. "
+                            "Use plan.show_variables() to inspect the dataset."
+                        )
+
+                    for pt_idx in pt_indices:
+                        row = plan.points.loc[pt_idx].to_dict()
+                        row["granule_id"] = gm.granule_id
+
+                        if spatial_method == "nearest":
+                            _extract_nearest(ds, row, variables, lon_name, lat_name)
+                        else:
+                            _extract_xoak(ds, row, variables, lon_name, lat_name)
+
+                        output_rows.append(row)
+                        batch_rows.append(row)
+
+                    batch_matched_points += len(pt_indices)
+
+            except ValueError:
+                raise
+            except Exception:
+                # Granule failed to open → emit NaN rows for its points
                 for pt_idx in pt_indices:
                     row = plan.points.loc[pt_idx].to_dict()
                     row["granule_id"] = gm.granule_id
-
-                    if spatial_method == "nearest":
-                        _extract_nearest(ds, row, variables, lon_name, lat_name)
-                    else:
-                        _extract_xoak(ds, row, variables, lon_name, lat_name)
-
+                    for var in variables:
+                        row[var] = float("nan")
                     output_rows.append(row)
                     batch_rows.append(row)
 
-                batch_matched_points += len(pt_indices)
+            granules_processed += 1
 
-        except ValueError:
-            raise
-        except Exception:
-            # Granule failed to open → emit NaN rows for its points
-            for pt_idx in pt_indices:
-                row = plan.points.loc[pt_idx].to_dict()
-                row["granule_id"] = gm.granule_id
-                for var in variables:
-                    row[var] = float("nan")
-                output_rows.append(row)
-                batch_rows.append(row)
+        # End of batch: report progress and save intermediate results.
+        # Use absolute (1-based) granule numbers so the output matches the
+        # user's original run when granule_range is used for crash recovery.
+        batch_start = batch_offset + 1 + granule_offset
+        batch_end = granules_processed + granule_offset
+        if not silent:
+            print(
+                f"granules {batch_start}-{batch_end} of {total_granules_all} processed, "
+                f"{batch_matched_points} points matched"
+            )
+        if save_path is not None and batch_rows:
+            batch_df = pd.DataFrame(batch_rows)
+            parquet_name = f"plan_{batch_start}_{batch_end}.parquet"
+            batch_df.to_parquet(save_path / parquet_name, index=False)
 
-        granules_processed += 1
-        batch_granule_count += 1
-        batch_last_g_idx = g_idx
-
-        # At the end of each batch (or the final granule), report progress and save.
-        if granules_processed % batch_size == 0 or granules_processed == total_granules:
-            batch_start = granules_processed - batch_granule_count + 1
-            batch_end = granules_processed
-            if not silent:
-                print(
-                    f"granules {batch_start}-{batch_end} of {total_granules} processed, "
-                    f"{batch_matched_points} points matched"
-                )
-            if save_path is not None and batch_rows:
-                batch_df = pd.DataFrame(batch_rows)
-                parquet_name = f"plan_{batch_first_g_idx}_{batch_last_g_idx}.parquet"
-                batch_df.to_parquet(save_path / parquet_name, index=False)
-            # Reset batch accumulators.
-            batch_rows = []
-            batch_matched_points = 0
-            batch_granule_count = 0
-            batch_first_g_idx = None
+        # Release all file handles for this batch so the OS can reclaim memory
+        # before we open the next batch.
+        del opened_batch
 
     if not output_rows:
         empty = plan.points.iloc[:0].copy()
