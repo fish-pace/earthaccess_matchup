@@ -1,0 +1,48 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure NASA Earthdata Login
+        continue-on-error: true
+        env:
+          EARTHDATA_USER: ${{ secrets.EARTHDATA_USER }}
+          EARTHDATA_PASS: ${{ secrets.EARTHDATA_PASS }}
+        run: |
+          echo "machine urs.earthdata.nasa.gov login $EARTHDATA_USER password $EARTHDATA_PASS" > ~/.netrc
+          chmod 0600 ~/.netrc
+
+      - name: Install docs dependencies
+        run: pip install ".[docs]"
+
+      - name: Build docs
+        run: mkdocs build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
