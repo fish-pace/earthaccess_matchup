@@ -28,6 +28,7 @@ import pathlib
 import time
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -631,11 +632,15 @@ def _extract_xoak(
     lon_name: str,
     lat_name: str,
 ) -> None:
-    """Extract values using xoak nearest-neighbour (2-D lat/lon arrays).
+    """Extract values using xoak nearest-neighbour (1-D or 2-D lat/lon arrays).
 
     Uses the ``xarray.indexes.NDPointIndex`` API with xoak's
     ``SklearnKDTreeAdapter``.  The lat/lon coordinate arrays are computed
     from dask (if chunked) before building the k-d tree index.
+
+    For 1-D (gridded) lat/lon coordinates, the arrays are broadcast to a
+    shared 2-D meshgrid so that ``NDPointIndex`` can build a joint spatial
+    index over both dimensions.
 
     Modifies *row* in-place.
     """
@@ -655,6 +660,17 @@ def _extract_xoak(
         ds_work[lat_name] = ds_work.coords[lat_name].compute()
     if lon_name in ds_work.coords and hasattr(ds_work.coords[lon_name].data, "compute"):
         ds_work[lon_name] = ds_work.coords[lon_name].compute()
+
+    # NDPointIndex requires lat and lon to share the same dimensions.  For
+    # regular grid data (1-D lat/lon with separate dimensions), broadcast both
+    # coordinates to a common 2-D meshgrid so that the joint index can be built.
+    lat_arr = ds_work.coords[lat_name] if lat_name in ds_work.coords else ds_work[lat_name]
+    lon_arr = ds_work.coords[lon_name] if lon_name in ds_work.coords else ds_work[lon_name]
+    if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+        lat_2d, lon_2d = np.meshgrid(lat_arr.values, lon_arr.values, indexing="ij")
+        lat_dims = lat_arr.dims + lon_arr.dims  # e.g. ('lat', 'lon')
+        ds_work[lat_name] = xr.DataArray(lat_2d, dims=lat_dims)
+        ds_work[lon_name] = xr.DataArray(lon_2d, dims=lat_dims)
 
     # Build the NDPointIndex using the sklearn k-d tree adapter.
     indexed_ds = ds_work.set_xindex(
