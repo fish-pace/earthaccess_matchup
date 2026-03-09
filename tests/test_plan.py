@@ -3196,8 +3196,8 @@ class TestMissingVariableErrorMessage:
         assert "spatial_method=" in msg
 
 
-class TestSwathMatchupWithXoak:
-    """Tests for geometry='swath' + spatial_method='xoak' matchup."""
+class TestXoakSpatialMethod:
+    """Tests for spatial_method='xoak' with both geometry='swath' and geometry='grid'."""
 
     def test_swath_matchup_returns_nearest_value(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -3345,6 +3345,56 @@ class TestSwathMatchupWithXoak:
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
         assert len(result) == 1
+
+    def test_grid_matchup_with_xoak_returns_nearest_value(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """geometry='grid' + spatial_method='xoak' returns the nearest grid value."""
+        pytest.importorskip("xoak")  # skip if xoak not installed
+
+        lats = [-90.0, 0.0, 90.0]
+        lons = [-180.0, 0.0, 180.0]
+        nc_path = str(tmp_path / "grid.nc")
+        _make_l3_dataset(lats, lons, seed=7).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0],
+                "lon": [0.0],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/grid.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            geometry="grid",
+            variables=["sst"],
+            spatial_method="xoak",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "sst" in result.columns
+        assert len(result) == 1
+        assert not math.isnan(result.loc[0, "sst"])
 
 
 class TestShowVariablesLayout:
