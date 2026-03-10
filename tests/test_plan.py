@@ -678,17 +678,17 @@ class TestPlanPublicApi:
         pts = pd.DataFrame(
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
         )
-        with pytest.raises(ValueError, match="short_name.*collection_id.*doi"):
+        with pytest.raises(ValueError, match="short_name.*concept_id.*doi"):
             plan(pts, source_kwargs={})
 
-    def test_plan_accepts_collection_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_plan_accepts_concept_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_ea = MagicMock()
         mock_ea.search_data.return_value = []
         monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
         pts = pd.DataFrame(
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
         )
-        result = plan(pts, source_kwargs={"collection_id": "C1234567890-PODAAC"})
+        result = plan(pts, source_kwargs={"concept_id": "C1234567890-PODAAC"})
         assert isinstance(result, Plan)
 
     def test_plan_accepts_doi(self, monkeypatch: pytest.MonkeyPatch) -> None:
