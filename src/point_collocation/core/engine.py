@@ -151,9 +151,11 @@ def matchup(
         ``granule_lon``
             Longitude of the matched location inside the granule.
         ``granule_time``
-            Time of the matched location inside the granule, or
-            ``pandas.NaT`` when no ``time`` coordinate is present in
-            the dataset.
+            Midpoint of the granule's temporal coverage, derived from
+            the granule metadata (``begin + (end - begin) / 2``).  For
+            earthaccess granules, temporal information is stored in the
+            search result metadata rather than in the dataset itself.
+            For zero-match rows, this column is ``pandas.NaT``.
 
         Points with zero matching granules contribute a single NaN row.
 
@@ -600,6 +602,11 @@ def _execute_plan(
                             pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
                             ds = _slice_grid_to_points(ds, pt_lats, pt_lons, lat_name, lon_name)
 
+                        # Compute granule_time from the granule metadata.  Earthaccess
+                        # granules store their temporal coverage in GranuleMeta.begin/end;
+                        # the dataset itself may not have a time coordinate at all.
+                        granule_time = gm.begin + (gm.end - gm.begin) / 2
+
                         if spatial_method == "xoak":
                             # Build the k-d tree index once for all points in this
                             # granule instead of rebuilding it per point.  This
@@ -610,6 +617,7 @@ def _execute_plan(
                                 row = plan.points.loc[pt_idx].to_dict()
                                 row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
+                                row["granule_time"] = granule_time
                                 rows_for_granule.append(row)
                             _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name)
                             output_rows.extend(rows_for_granule)
@@ -619,6 +627,7 @@ def _execute_plan(
                                 row = plan.points.loc[pt_idx].to_dict()
                                 row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
+                                row["granule_time"] = granule_time
                                 _extract_nearest(ds, row, variables, lon_name, lat_name)
                                 output_rows.append(row)
                                 batch_rows.append(row)
@@ -628,14 +637,16 @@ def _execute_plan(
                 except ValueError:
                     raise
                 except Exception:
-                    # Granule failed to open → emit NaN rows for its points
+                    # Granule failed to open → emit NaN rows for its points.
+                    # Still use the metadata midpoint time since the dataset couldn't be opened.
+                    failed_granule_time = gm.begin + (gm.end - gm.begin) / 2
                     for pt_idx in pt_indices:
                         row = plan.points.loc[pt_idx].to_dict()
                         row["pc_id"] = pt_idx
                         row["granule_id"] = gm.granule_id
                         row["granule_lat"] = float("nan")
                         row["granule_lon"] = float("nan")
-                        row["granule_time"] = pd.NaT
+                        row["granule_time"] = failed_granule_time
                         for var in variables:
                             row[var] = float("nan")
                         output_rows.append(row)
@@ -802,8 +813,9 @@ def _extract_nearest(
 ) -> None:
     """Extract values using ``ds.sel(..., method='nearest')`` (1-D coords).
 
-    Modifies *row* in-place, including ``granule_lat``, ``granule_lon``,
-    and ``granule_time`` columns for the matched grid location.
+    Modifies *row* in-place, including ``granule_lat`` and ``granule_lon``
+    columns for the matched grid location.  ``granule_time`` is set by the
+    caller from granule metadata before this function is called.
     """
     # Extract the actual matched coordinates (nearest-neighbour grid position).
     try:
@@ -814,19 +826,6 @@ def _extract_nearest(
     except Exception:
         row["granule_lat"] = float("nan")
         row["granule_lon"] = float("nan")
-
-    # Extract the time coordinate if present and scalar.
-    try:
-        if "time" in ds.coords:
-            t = ds.coords["time"]
-            if t.ndim == 0:
-                row["granule_time"] = pd.Timestamp(t.values)
-            else:
-                row["granule_time"] = pd.NaT
-        else:
-            row["granule_time"] = pd.NaT
-    except Exception:
-        row["granule_time"] = pd.NaT
 
     for var in variables:
         try:
@@ -1021,31 +1020,6 @@ def _extract_xoak_batch(
                 row["granule_lat"] = float("nan")
                 row["granule_lon"] = float("nan")
 
-        # Extract the time coordinate for each query point, if present.
-        try:
-            if "time" in selected.coords:
-                t = selected.coords["time"]
-                if t.ndim == 0:
-                    ts = pd.Timestamp(t.values)
-                    for row in rows:
-                        row["granule_time"] = ts
-                elif t.ndim == 1:
-                    t_vals = t.values
-                    for i, row in enumerate(rows):
-                        try:
-                            row["granule_time"] = pd.Timestamp(t_vals[i])
-                        except Exception:
-                            row["granule_time"] = pd.NaT
-                else:
-                    for row in rows:
-                        row["granule_time"] = pd.NaT
-            else:
-                for row in rows:
-                    row["granule_time"] = pd.NaT
-        except Exception:
-            for row in rows:
-                row["granule_time"] = pd.NaT
-
         for var in variables:
             try:
                 var_data = selected[var]
@@ -1070,7 +1044,6 @@ def _extract_xoak_batch(
         for row in rows:
             row["granule_lat"] = float("nan")
             row["granule_lon"] = float("nan")
-            row["granule_time"] = pd.NaT
         for var in variables:
             for r in rows:
                 r[var] = float("nan")

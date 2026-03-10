@@ -2274,32 +2274,40 @@ class TestNewOutputColumns:
         assert result.loc[0, "granule_lat"] == pytest.approx(0.0)
         assert result.loc[0, "granule_lon"] == pytest.approx(0.0)
 
-    def test_granule_time_is_nat_when_no_time_coord(
+    def test_granule_time_from_granule_metadata(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """granule_time is NaT when the dataset has no time coordinate."""
+        """granule_time is the midpoint of the granule's metadata begin/end times."""
         nc_path = str(tmp_path / "g.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+        # _make_plan_single uses begin=2023-06-01T00:00:00Z, end=2023-06-01T23:59:59Z
         p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+        begin = pd.Timestamp("2023-06-01T00:00:00Z")
+        end = pd.Timestamp("2023-06-01T23:59:59Z")
+        expected_time = begin + (end - begin) / 2
 
         result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         assert "granule_time" in result.columns
-        assert pd.isnull(result.loc[0, "granule_time"])
+        assert result.loc[0, "granule_time"] == expected_time
 
-    def test_granule_time_extracted_when_scalar_time_coord_present(
+    def test_granule_time_from_metadata_not_dataset_time_coord(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """granule_time reflects the dataset's scalar time coordinate."""
+        """granule_time uses granule metadata, not the dataset's time coordinate."""
         nc_path = str(tmp_path / "g.nc")
         ds = _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0])
-        expected_time = pd.Timestamp("2023-06-01T00:00:00")
-        ds = ds.assign_coords(time=expected_time)
+        # Add a scalar time coordinate to the dataset (different from the metadata midpoint).
+        ds = ds.assign_coords(time=pd.Timestamp("2000-01-01T00:00:00"))
         ds.to_netcdf(nc_path)
 
         p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+        begin = pd.Timestamp("2023-06-01T00:00:00Z")
+        end = pd.Timestamp("2023-06-01T23:59:59Z")
+        expected_time = begin + (end - begin) / 2
 
         result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         assert "granule_time" in result.columns
+        # Must match the metadata midpoint, not the dataset's time coordinate.
         assert result.loc[0, "granule_time"] == expected_time
 
     def test_granule_lat_lon_nan_for_zero_match_points(
