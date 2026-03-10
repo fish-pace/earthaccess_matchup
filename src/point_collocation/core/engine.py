@@ -381,7 +381,11 @@ def _find_time_dim(ds: xr.Dataset) -> str | None:
         # If cf_xarray found a time coordinate that is not a dimension (e.g. a
         # scalar), still check whether a dimension with a standard time name
         # exists so we do not silently miss it.
-    except (ImportError, Exception):
+    except ImportError:
+        pass
+    except (AttributeError, KeyError):
+        # cf_xarray is installed but the dataset lacks the attributes needed for
+        # CF-axis detection (e.g. no standard_name / units on any variable).
         pass
 
     # --- fallback: name-based search ---
@@ -433,8 +437,11 @@ def _select_time(
         if pd.isna(ts):
             raise ValueError("NaT")
         return da.sel({time_dim: ts}, method="nearest")
-    except Exception:
+    except (TypeError, ValueError, KeyError):
         # Fallback: first time step.
+        # - TypeError / ValueError: point_time cannot be converted to a Timestamp
+        #   or is NaT.
+        # - KeyError: the time coordinate is absent or the sel fails on this ds.
         return da.isel({time_dim: 0})
 
 
