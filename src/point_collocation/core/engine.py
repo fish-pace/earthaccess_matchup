@@ -392,6 +392,22 @@ def _merge_datatree(dt: object) -> xr.Dataset:
     return merged
 
 
+def _safe_close(file_obj: object) -> None:
+    """Call ``file_obj.close()`` if it exists, suppressing any errors.
+
+    Used to close earthaccess file objects (S3/HTTPS streams) promptly after
+    each granule is processed.  Errors are suppressed because the object may
+    have already been closed internally by a higher-level layer (e.g. h5py),
+    and a failure to close must never abort the overall matchup run.
+    """
+    close_fn = getattr(file_obj, "close", None)
+    if callable(close_fn):
+        try:
+            close_fn()
+        except Exception:
+            pass
+
+
 def _execute_plan(
     plan: "Plan",
     *,
@@ -517,74 +533,89 @@ def _execute_plan(
 
         for batch_pos, (g_idx, pt_indices) in enumerate(batch_items):
             gm = plan.granules[g_idx]
+            # Pop the file object out of the batch list immediately so the
+            # reference is dropped as soon as this granule is processed.
+            # This ensures that at most one granule's S3/HTTPS buffers are
+            # alive at a time, regardless of how large batch_size is.
             file_obj = opened_batch[batch_pos]
+            opened_batch[batch_pos] = None
 
             try:
-                with _open_as_flat_dataset(file_obj, open_method, kwargs) as ds:  # type: ignore[arg-type]
-                    lon_name, lat_name = _find_geoloc_pair(ds)
-                    ds = _ensure_coords(ds, lon_name, lat_name)
+                try:
+                    with _open_as_flat_dataset(file_obj, open_method, kwargs) as ds:  # type: ignore[arg-type]
+                        lon_name, lat_name = _find_geoloc_pair(ds)
+                        ds = _ensure_coords(ds, lon_name, lat_name)
 
-                    # Validate geometry against actual array dims — once only.
-                    if not geometry_checked:
-                        _check_geometry(ds, lon_name, lat_name, geometry)
-                        geometry_checked = True
+                        # Validate geometry against actual array dims — once only.
+                        if not geometry_checked:
+                            _check_geometry(ds, lon_name, lat_name, geometry)
+                            geometry_checked = True
 
-                    # Validate that all requested variables exist in the dataset.
-                    missing_vars = [v for v in variables if v not in ds]
-                    if missing_vars:
-                        avail = list(ds.data_vars)
-                        raise ValueError(
-                            f"Variable(s) {missing_vars!r} not found in granule "
-                            f"'{gm.granule_id}'. "
-                            f"geometry={geometry!r}, open_method={open_method!r}, "
-                            f"spatial_method={spatial_method!r}. "
-                            f"Available variables: {avail}. "
-                            "Use plan.show_variables() to inspect the dataset."
-                        )
+                        # Validate that all requested variables exist in the dataset.
+                        missing_vars = [v for v in variables if v not in ds]
+                        if missing_vars:
+                            avail = list(ds.data_vars)
+                            raise ValueError(
+                                f"Variable(s) {missing_vars!r} not found in granule "
+                                f"'{gm.granule_id}'. "
+                                f"geometry={geometry!r}, open_method={open_method!r}, "
+                                f"spatial_method={spatial_method!r}. "
+                                f"Available variables: {avail}. "
+                                "Use plan.show_variables() to inspect the dataset."
+                            )
 
-                    # For grid+xoak, pre-slice the dataset to the spatial extent
-                    # of the query points before building the k-d tree.  A global
-                    # granule with only a few scattered points would otherwise cause
-                    # xoak to index the entire global grid, which is very slow.
-                    if spatial_method == "xoak" and geometry == "grid":
-                        pt_lats = [float(plan.points.loc[idx]["lat"]) for idx in pt_indices]
-                        pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
-                        ds = _slice_grid_to_points(ds, pt_lats, pt_lons, lat_name, lon_name)
+                        # For grid+xoak, pre-slice the dataset to the spatial extent
+                        # of the query points before building the k-d tree.  A global
+                        # granule with only a few scattered points would otherwise cause
+                        # xoak to index the entire global grid, which is very slow.
+                        if spatial_method == "xoak" and geometry == "grid":
+                            pt_lats = [float(plan.points.loc[idx]["lat"]) for idx in pt_indices]
+                            pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
+                            ds = _slice_grid_to_points(ds, pt_lats, pt_lons, lat_name, lon_name)
 
-                    if spatial_method == "xoak":
-                        # Build the k-d tree index once for all points in this
-                        # granule instead of rebuilding it per point.  This
-                        # dramatically reduces memory pressure and speeds up
-                        # processing when a granule has many query points.
-                        rows_for_granule = []
-                        for pt_idx in pt_indices:
-                            row = plan.points.loc[pt_idx].to_dict()
-                            row["granule_id"] = gm.granule_id
-                            rows_for_granule.append(row)
-                        _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name)
-                        output_rows.extend(rows_for_granule)
-                        batch_rows.extend(rows_for_granule)
-                    else:
-                        for pt_idx in pt_indices:
-                            row = plan.points.loc[pt_idx].to_dict()
-                            row["granule_id"] = gm.granule_id
-                            _extract_nearest(ds, row, variables, lon_name, lat_name)
-                            output_rows.append(row)
-                            batch_rows.append(row)
+                        if spatial_method == "xoak":
+                            # Build the k-d tree index once for all points in this
+                            # granule instead of rebuilding it per point.  This
+                            # dramatically reduces memory pressure and speeds up
+                            # processing when a granule has many query points.
+                            rows_for_granule = []
+                            for pt_idx in pt_indices:
+                                row = plan.points.loc[pt_idx].to_dict()
+                                row["granule_id"] = gm.granule_id
+                                rows_for_granule.append(row)
+                            _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name)
+                            output_rows.extend(rows_for_granule)
+                            batch_rows.extend(rows_for_granule)
+                        else:
+                            for pt_idx in pt_indices:
+                                row = plan.points.loc[pt_idx].to_dict()
+                                row["granule_id"] = gm.granule_id
+                                _extract_nearest(ds, row, variables, lon_name, lat_name)
+                                output_rows.append(row)
+                                batch_rows.append(row)
 
-                    batch_matched_points += len(pt_indices)
+                        batch_matched_points += len(pt_indices)
 
-            except ValueError:
-                raise
-            except Exception:
-                # Granule failed to open → emit NaN rows for its points
-                for pt_idx in pt_indices:
-                    row = plan.points.loc[pt_idx].to_dict()
-                    row["granule_id"] = gm.granule_id
-                    for var in variables:
-                        row[var] = float("nan")
-                    output_rows.append(row)
-                    batch_rows.append(row)
+                except ValueError:
+                    raise
+                except Exception:
+                    # Granule failed to open → emit NaN rows for its points
+                    for pt_idx in pt_indices:
+                        row = plan.points.loc[pt_idx].to_dict()
+                        row["granule_id"] = gm.granule_id
+                        for var in variables:
+                            row[var] = float("nan")
+                        output_rows.append(row)
+                        batch_rows.append(row)
+            finally:
+                # Explicitly close the earthaccess file object (S3/HTTPS
+                # stream) to release its internal buffers immediately.
+                # xarray/h5netcdf closes the HDF5 layer but does NOT close
+                # the underlying file-like object, so without this call the
+                # object — and its buffers — stays alive until the entire
+                # batch is finished, causing peak memory to scale with
+                # batch_size rather than staying constant at ~1 granule.
+                _safe_close(file_obj)
 
             granules_processed += 1
 
@@ -607,11 +638,11 @@ def _execute_plan(
             parquet_name = f"plan_{batch_start}_{batch_end}.parquet"
             batch_df.to_parquet(save_path / parquet_name, index=False)
 
-        # Release all file handles for this batch so the OS can reclaim memory
-        # before we open the next batch.  The explicit gc.collect() call runs
-        # Python's cyclic garbage collector immediately, which is important for
-        # DataTree objects (which contain parent→child reference cycles) that
-        # would otherwise accumulate until the next scheduled GC pass.
+        # The opened_batch list has already been nulled out entry-by-entry
+        # inside the loop above (each slot set to None and the file object
+        # explicitly closed via _safe_close).  Delete the list itself here,
+        # then run the cyclic GC to promptly free any DataTree objects that
+        # contain parent→child reference cycles.
         del opened_batch
         gc.collect()
 
