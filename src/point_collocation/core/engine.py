@@ -59,8 +59,8 @@ def matchup(
     open_method: str | None = None,
     spatial_method: str | None = None,
     open_dataset_kwargs: dict | None = None,
-    silent: bool = False,
-    batch_size: int = 10,
+    silent: bool = True,
+    batch_size: int | None = None,
     save_dir: str | os.PathLike | None = None,
     granule_range: tuple[int, int] | None = None,
 ) -> pd.DataFrame:
@@ -105,13 +105,15 @@ def matchup(
         explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
         when no ``engine`` key is present in the dict.
     silent:
-        When ``False`` (default), a progress message is printed to
-        stdout after every *batch_size* granules.  Set to ``True`` to
-        suppress all progress output.
+        When ``True`` (default), all progress output is suppressed.
+        Set to ``False`` to print a progress message to stdout after
+        every *batch_size* granules.
     batch_size:
         Number of granules to process between progress reports (and
         between intermediate saves when *save_dir* is set).  Defaults
-        to ``10``.
+        to ``None``, which sets the batch size to one more than the
+        total number of matched granules so that all granules are
+        processed in a single batch.
     save_dir:
         Directory in which intermediate results are saved as Parquet
         files after each batch of *batch_size* granules.  The directory
@@ -133,9 +135,29 @@ def matchup(
     Returns
     -------
     pandas.DataFrame
-        One row per (point, granule) pair, including a ``granule_id``
-        column and one column per variable.  Points with zero matching
-        granules contribute a single NaN row.
+        One row per (point, granule) pair.  In addition to the original
+        point columns and one column per requested variable, the output
+        always includes:
+
+        ``pc_id``
+            The original row index from the input dataframe, allowing
+            matchup rows to be traced back to their source point even
+            when a single point matches multiple granules.
+        ``granule_id``
+            Identifier of the granule that provided this row's values.
+        ``granule_lat``
+            Latitude of the matched location inside the granule (i.e.
+            the nearest-neighbour grid or swath position).
+        ``granule_lon``
+            Longitude of the matched location inside the granule.
+        ``granule_time``
+            Midpoint of the granule's temporal coverage, derived from
+            the granule metadata (``begin + (end - begin) / 2``).  For
+            earthaccess granules, temporal information is stored in the
+            search result metadata rather than in the dataset itself.
+            For zero-match rows, this column is ``pandas.NaT``.
+
+        Points with zero matching granules contribute a single NaN row.
 
     Raises
     ------
@@ -415,8 +437,8 @@ def _execute_plan(
     open_method: str,
     spatial_method: str,
     variables: list[str],
-    silent: bool = False,
-    batch_size: int = 10,
+    silent: bool = True,
+    batch_size: int | None = None,
     save_dir: str | os.PathLike | None = None,
     granule_range: tuple[int, int] | None = None,
     **open_dataset_kwargs: object,
@@ -476,7 +498,11 @@ def _execute_plan(
     # Zero-match points → single NaN row each
     for pt_idx in zero_match_pt_indices:
         row: dict = plan.points.loc[pt_idx].to_dict()
+        row["pc_id"] = pt_idx
         row["granule_id"] = float("nan")
+        row["granule_lat"] = float("nan")
+        row["granule_lon"] = float("nan")
+        row["granule_time"] = pd.NaT
         for var in variables:
             row[var] = float("nan")
         output_rows.append(row)
@@ -511,12 +537,15 @@ def _execute_plan(
     granules_processed = 0
     start_time = time.monotonic()
 
+    # Resolve effective batch size: None means process everything in one batch.
+    effective_batch_size = batch_size if batch_size is not None else total_granules + 1
+
     # Process granules in batches.  We open only the files needed for each
     # batch so that file handles from previous batches can be released by the
     # OS, keeping peak memory proportional to batch_size rather than the total
     # number of granules.
-    for batch_offset in range(0, total_granules, batch_size):
-        batch_items = sorted_granule_items[batch_offset : batch_offset + batch_size]
+    for batch_offset in range(0, total_granules, effective_batch_size):
+        batch_items = sorted_granule_items[batch_offset : batch_offset + effective_batch_size]
 
         # Collect the earthaccess result objects for this batch (preserving
         # order) so that opened_batch[i] corresponds to batch_items[i].
@@ -573,6 +602,11 @@ def _execute_plan(
                             pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
                             ds = _slice_grid_to_points(ds, pt_lats, pt_lons, lat_name, lon_name)
 
+                        # Compute granule_time from the granule metadata.  Earthaccess
+                        # granules store their temporal coverage in GranuleMeta.begin/end;
+                        # the dataset itself may not have a time coordinate at all.
+                        granule_time = gm.begin + (gm.end - gm.begin) / 2
+
                         if spatial_method == "xoak":
                             # Build the k-d tree index once for all points in this
                             # granule instead of rebuilding it per point.  This
@@ -581,7 +615,9 @@ def _execute_plan(
                             rows_for_granule = []
                             for pt_idx in pt_indices:
                                 row = plan.points.loc[pt_idx].to_dict()
+                                row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
+                                row["granule_time"] = granule_time
                                 rows_for_granule.append(row)
                             _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name)
                             output_rows.extend(rows_for_granule)
@@ -589,7 +625,9 @@ def _execute_plan(
                         else:
                             for pt_idx in pt_indices:
                                 row = plan.points.loc[pt_idx].to_dict()
+                                row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
+                                row["granule_time"] = granule_time
                                 _extract_nearest(ds, row, variables, lon_name, lat_name)
                                 output_rows.append(row)
                                 batch_rows.append(row)
@@ -599,10 +637,16 @@ def _execute_plan(
                 except ValueError:
                     raise
                 except Exception:
-                    # Granule failed to open → emit NaN rows for its points
+                    # Granule failed to open → emit NaN rows for its points.
+                    # Still use the metadata midpoint time since the dataset couldn't be opened.
+                    failed_granule_time = gm.begin + (gm.end - gm.begin) / 2
                     for pt_idx in pt_indices:
                         row = plan.points.loc[pt_idx].to_dict()
+                        row["pc_id"] = pt_idx
                         row["granule_id"] = gm.granule_id
+                        row["granule_lat"] = float("nan")
+                        row["granule_lon"] = float("nan")
+                        row["granule_time"] = failed_granule_time
                         for var in variables:
                             row[var] = float("nan")
                         output_rows.append(row)
@@ -659,7 +703,11 @@ def _execute_plan(
 
     if not output_rows:
         empty = plan.points.iloc[:0].copy()
+        empty["pc_id"] = pd.Series(dtype=object)
         empty["granule_id"] = pd.Series(dtype=object)
+        empty["granule_lat"] = pd.Series(dtype=float)
+        empty["granule_lon"] = pd.Series(dtype=float)
+        empty["granule_time"] = pd.Series(dtype="datetime64[ns]")
         for var in variables:
             empty[var] = pd.Series(dtype=float)
         return empty
@@ -765,8 +813,20 @@ def _extract_nearest(
 ) -> None:
     """Extract values using ``ds.sel(..., method='nearest')`` (1-D coords).
 
-    Modifies *row* in-place.
+    Modifies *row* in-place, including ``granule_lat`` and ``granule_lon``
+    columns for the matched grid location.  ``granule_time`` is set by the
+    caller from granule metadata before this function is called.
     """
+    # Extract the actual matched coordinates (nearest-neighbour grid position).
+    try:
+        matched_lat = ds.coords[lat_name].sel({lat_name: row["lat"]}, method="nearest")
+        matched_lon = ds.coords[lon_name].sel({lon_name: row["lon"]}, method="nearest")
+        row["granule_lat"] = float(matched_lat)
+        row["granule_lon"] = float(matched_lon)
+    except Exception:
+        row["granule_lat"] = float("nan")
+        row["granule_lon"] = float("nan")
+
     for var in variables:
         try:
             selected = ds[var].sel(
@@ -948,6 +1008,18 @@ def _extract_xoak_batch(
             {lat_name: target[lat_name], lon_name: target[lon_name]},
             method="nearest",
         )
+        # Extract matched granule coordinates for each query point.
+        try:
+            matched_lats = selected.coords[lat_name].values
+            matched_lons = selected.coords[lon_name].values
+            for i, row in enumerate(rows):
+                row["granule_lat"] = float(matched_lats[i])
+                row["granule_lon"] = float(matched_lons[i])
+        except Exception:
+            for row in rows:
+                row["granule_lat"] = float("nan")
+                row["granule_lon"] = float("nan")
+
         for var in variables:
             try:
                 var_data = selected[var]
@@ -969,6 +1041,9 @@ def _extract_xoak_batch(
                 for r in rows:
                     r[var] = float("nan")
     except Exception:
+        for row in rows:
+            row["granule_lat"] = float("nan")
+            row["granule_lon"] = float("nan")
         for var in variables:
             for r in rows:
                 r[var] = float("nan")
