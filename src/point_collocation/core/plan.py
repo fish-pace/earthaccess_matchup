@@ -733,7 +733,7 @@ def _search_earthaccess(
         If ``earthaccess`` is not installed.
     ValueError
         If ``source_kwargs`` does not contain at least one of ``"short_name"``,
-        ``"collection_id"``, or ``"doi"``.
+        ``"concept_id"``, or ``"doi"``.
     """
     try:
         import earthaccess  # type: ignore[import-untyped]
@@ -744,11 +744,11 @@ def _search_earthaccess(
         ) from exc
 
     base_kwargs: dict[str, Any] = dict(source_kwargs or {})
-    _COLLECTION_ID_KEYS = {"short_name", "collection_id", "doi"}
-    if not _COLLECTION_ID_KEYS.intersection(base_kwargs):
+    _CONCEPT_ID_KEYS = {"short_name", "concept_id", "doi"}
+    if not _CONCEPT_ID_KEYS.intersection(base_kwargs):
         raise ValueError(
             "'source_kwargs' must contain at least one of 'short_name', "
-            "'collection_id', or 'doi' when data_source='earthaccess'."
+            "'concept_id', or 'doi' when data_source='earthaccess'."
         )
 
     # Extract granule_name for post-search filtering (faster than passing to search_data).
