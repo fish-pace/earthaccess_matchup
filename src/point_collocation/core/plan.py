@@ -256,6 +256,7 @@ class Plan:
         kwargs = {"chunks": {}, **(open_dataset_kwargs or {})}
         if "engine" not in kwargs:
             kwargs["engine"] = "h5netcdf"
+        kwargs.setdefault("decode_timedelta", False)
 
         file_objs = earthaccess.open([result], pqdm_kwargs={"disable": True})
         if len(file_objs) != 1:
@@ -346,6 +347,7 @@ class Plan:
         kwargs = {"chunks": {}, **(open_dataset_kwargs or {})}
         if "engine" not in kwargs:
             kwargs["engine"] = "h5netcdf"
+        kwargs.setdefault("decode_timedelta", False)
 
         result_list = results.results if isinstance(results, Plan) else list(results)
         file_objs = earthaccess.open(result_list, pqdm_kwargs={"disable": True})
@@ -439,6 +441,7 @@ class Plan:
         kwargs: dict[str, Any] = {"chunks": {}, **(open_dataset_kwargs or {})}
         if "engine" not in kwargs:
             kwargs["engine"] = "h5netcdf"
+        kwargs.setdefault("decode_timedelta", False)
 
         try:
             import earthaccess  # type: ignore[import-untyped]

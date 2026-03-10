@@ -494,7 +494,9 @@ def _open_as_flat_dataset(
     promptly — without relying on Python's cyclic garbage collector.
     """
     if open_method == "dataset":
-        with xr.open_dataset(file_obj, **kwargs) as ds:  # type: ignore[arg-type]
+        ds_kwargs = dict(kwargs)
+        ds_kwargs.setdefault("decode_timedelta", False)
+        with xr.open_dataset(file_obj, **ds_kwargs) as ds:  # type: ignore[arg-type]
             yield ds
         return
 
@@ -617,6 +619,7 @@ def _execute_plan(
     kwargs = dict(open_dataset_kwargs)
     if "engine" not in kwargs:
         kwargs["engine"] = "h5netcdf"
+    kwargs.setdefault("decode_timedelta", False)
 
     # Prepare save directory if requested.
     save_path: pathlib.Path | None = None
