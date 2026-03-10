@@ -1699,7 +1699,7 @@ class TestMatchupWithPlan:
     def test_matchup_silent_false_prints_progress(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        """silent=False (default) prints progress after each batch."""
+        """silent=False prints progress after each batch."""
         nc_path = str(tmp_path / "AQUA_MODIS.20230601.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
 
@@ -2131,6 +2131,252 @@ class TestMatchupWithPlan:
             f"for datatree-merge, but was called {gc_call_count} times. "
             "Without per-granule GC, DataTree reference cycles accumulate across "
             "the entire batch, causing memory to scale with batch_size."
+        )
+
+
+# ---------------------------------------------------------------------------
+# pc_id, granule_lat/lon/time columns and new defaults
+# ---------------------------------------------------------------------------
+
+
+class TestNewOutputColumns:
+    """Tests for pc_id, granule_lat, granule_lon, granule_time columns."""
+
+    def _make_plan_single(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        nc_path: str,
+    ) -> "Plan":
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        return Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+    def _make_plan_zero_match(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> "Plan":
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = []
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        return Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+    def test_pc_id_present_in_matched_output(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pc_id column contains the original row index for matched points."""
+        nc_path = str(tmp_path / "g.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+        p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "pc_id" in result.columns
+        assert result.loc[0, "pc_id"] == 0
+
+    def test_pc_id_present_in_zero_match_output(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pc_id column is present even for points with zero matching granules."""
+        p = self._make_plan_zero_match(monkeypatch)
+
+        result = pc.matchup(p, geometry="grid")
+        assert "pc_id" in result.columns
+        assert result.loc[0, "pc_id"] == 0
+
+    def test_pc_id_tracks_original_row_index_for_multi_granule_match(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pc_id identifies which original point row each matchup row belongs to."""
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(nc_a)
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=2).to_netcdf(nc_b)
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm_a = GranuleMeta(
+            granule_id="https://example.com/a.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        gm_b = GranuleMeta(
+            granule_id="https://example.com/b.nc",
+            begin=pd.Timestamp("2023-06-01T06:00:00Z"),
+            end=pd.Timestamp("2023-06-01T18:00:00Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=1,
+        )
+        p = Plan(
+            points=pts,
+            results=[object(), object()],
+            granules=[gm_a, gm_b],
+            point_granule_map={0: [0, 1]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert len(result) == 2
+        # Both output rows trace back to the same input point (row 0)
+        assert list(result["pc_id"]) == [0, 0]
+
+    def test_granule_lat_lon_present_in_matched_output(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_lat and granule_lon are the nearest-neighbour grid positions."""
+        nc_path = str(tmp_path / "g.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+        p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "granule_lat" in result.columns
+        assert "granule_lon" in result.columns
+        # Point is at (0, 0); the nearest grid point in [-90, 0, 90] x [-180, 0, 180]
+        # is exactly (0.0, 0.0).
+        assert result.loc[0, "granule_lat"] == pytest.approx(0.0)
+        assert result.loc[0, "granule_lon"] == pytest.approx(0.0)
+
+    def test_granule_time_is_nat_when_no_time_coord(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_time is NaT when the dataset has no time coordinate."""
+        nc_path = str(tmp_path / "g.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+        p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "granule_time" in result.columns
+        assert pd.isnull(result.loc[0, "granule_time"])
+
+    def test_granule_time_extracted_when_scalar_time_coord_present(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_time reflects the dataset's scalar time coordinate."""
+        nc_path = str(tmp_path / "g.nc")
+        ds = _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0])
+        expected_time = pd.Timestamp("2023-06-01T00:00:00")
+        ds = ds.assign_coords(time=expected_time)
+        ds.to_netcdf(nc_path)
+
+        p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "granule_time" in result.columns
+        assert result.loc[0, "granule_time"] == expected_time
+
+    def test_granule_lat_lon_nan_for_zero_match_points(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """granule_lat, granule_lon are NaN and granule_time is NaT for zero-match rows."""
+        p = self._make_plan_zero_match(monkeypatch)
+
+        result = pc.matchup(p, geometry="grid")
+        assert math.isnan(result.loc[0, "granule_lat"])
+        assert math.isnan(result.loc[0, "granule_lon"])
+        assert pd.isnull(result.loc[0, "granule_time"])
+
+    def test_default_silent_is_true(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """matchup() is silent by default (no progress output)."""
+        nc_path = str(tmp_path / "g.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+        p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
+
+        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_default_batch_size_processes_all_in_one_batch(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Default batch_size puts all granules into a single batch (one progress line)."""
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        nc_c = str(tmp_path / "c.nc")
+        for i, nc_path in enumerate([nc_a, nc_b, nc_c]):
+            _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=i).to_netcdf(nc_path)
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b, nc_c]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0, 0.0, 0.0],
+                "lon": [0.0, 0.0, 0.0],
+                "time": pd.to_datetime([
+                    "2023-06-01T12:00:00",
+                    "2023-06-02T12:00:00",
+                    "2023-06-03T12:00:00",
+                ]),
+            }
+        )
+        gms = [
+            GranuleMeta(
+                granule_id=f"https://example.com/{i}.nc",
+                begin=pd.Timestamp(f"2023-06-0{i+1}T00:00:00Z"),
+                end=pd.Timestamp(f"2023-06-0{i+1}T23:59:59Z"),
+                bbox=(-180.0, -90.0, 180.0, 90.0),
+                result_index=i,
+            )
+            for i in range(3)
+        ]
+        p = Plan(
+            points=pts,
+            results=[object(), object(), object()],
+            granules=gms,
+            point_granule_map={0: [0], 1: [1], 2: [2]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        # With silent=False and default batch_size, only one progress line should appear
+        # (all 3 granules processed in a single batch).
+        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"}, silent=False)
+        captured = capsys.readouterr()
+        lines = [ln for ln in captured.out.strip().splitlines() if ln.strip()]
+        assert len(lines) == 1, (
+            f"Expected 1 progress line (all granules in one batch), got {len(lines)}: {lines}"
         )
 
 
