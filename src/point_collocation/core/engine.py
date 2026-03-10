@@ -51,6 +51,10 @@ _VALID_GEOMETRIES = {"grid", "swath"}
 _VALID_OPEN_METHODS = {"dataset", "datatree-merge"}
 _VALID_SPATIAL_METHODS = {"nearest", "xoak"}
 
+# Time dimension names used as a fallback when cf_xarray is not installed or
+# when the dataset lacks CF-convention axis/units attributes.  Tried in order.
+_TIME_DIM_NAMES = ["time", "Time", "TIME"]
+
 
 def matchup(
     plan: "Plan",
@@ -349,6 +353,89 @@ def _ensure_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> xr.Dataset:
     if to_promote:
         ds = ds.set_coords(to_promote)
     return ds
+
+
+def _find_time_dim(ds: xr.Dataset) -> str | None:
+    """Return the name of the time dimension in *ds*, or ``None`` if absent.
+
+    Detection strategy
+    ------------------
+    1. **cf_xarray** (primary, if installed): inspects CF-convention attributes
+       such as ``axis='T'``, ``standard_name``, and ``units`` to identify the
+       time axis.
+    2. **Name-based fallback**: if ``cf_xarray`` is not installed or the dataset
+       lacks CF attributes, searches :data:`_TIME_DIM_NAMES` in ``ds.dims`` and
+       ``ds.coords``.
+
+    Only dimensions are returned (not scalar coordinates) because only a
+    dimensional time axis requires special handling during extraction.
+    """
+    # --- primary: cf_xarray ---
+    try:
+        import cf_xarray  # noqa: F401  (registers the .cf accessor)
+
+        time_coords = ds.cf.axes.get("T", [])
+        for name in time_coords:
+            if name in ds.dims:
+                return name
+        # If cf_xarray found a time coordinate that is not a dimension (e.g. a
+        # scalar), still check whether a dimension with a standard time name
+        # exists so we do not silently miss it.
+    except (ImportError, Exception):
+        pass
+
+    # --- fallback: name-based search ---
+    for name in _TIME_DIM_NAMES:
+        if name in ds.dims:
+            return name
+
+    return None
+
+
+def _select_time(
+    da: xr.DataArray,
+    time_dim: str,
+    point_time: object,
+) -> xr.DataArray:
+    """Select the appropriate time step from *da* along *time_dim*.
+
+    Parameters
+    ----------
+    da:
+        DataArray produced after spatial selection (lat/lon already resolved).
+    time_dim:
+        Name of the time dimension to handle.
+    point_time:
+        Timestamp of the observation point (``row["time"]``).  Used to find
+        the nearest time step when *da* has multiple time steps.
+
+    Returns
+    -------
+    xr.DataArray
+        * *da* unchanged if *time_dim* is not one of ``da.dims``.
+        * *da* with the time dimension squeezed out when there is exactly one
+          time step.
+        * *da* with the nearest time step selected when there are multiple time
+          steps and *point_time* is a valid timestamp; falls back to the first
+          time step if *point_time* is unusable.
+    """
+    if time_dim not in da.dims:
+        return da
+
+    n_times = da.sizes[time_dim]
+
+    if n_times == 1:
+        return da.squeeze(time_dim)
+
+    # Multiple time steps: select nearest to the point timestamp.
+    try:
+        ts = pd.Timestamp(point_time)
+        if pd.isna(ts):
+            raise ValueError("NaT")
+        return da.sel({time_dim: ts}, method="nearest")
+    except Exception:
+        # Fallback: first time step.
+        return da.isel({time_dim: 0})
 
 
 def _check_geometry(
@@ -662,6 +749,10 @@ def _execute_plan(
                         # the dataset itself may not have a time coordinate at all.
                         granule_time = gm.begin + (gm.end - gm.begin) / 2
 
+                        # Detect time dimension once per granule so that
+                        # extraction functions can handle (time, lat, lon) variables.
+                        time_dim = _find_time_dim(ds)
+
                         if spatial_method == "xoak":
                             # Build the k-d tree index once for all points in this
                             # granule instead of rebuilding it per point.  This
@@ -674,7 +765,7 @@ def _execute_plan(
                                 row["granule_id"] = gm.granule_id
                                 row["granule_time"] = granule_time
                                 rows_for_granule.append(row)
-                            _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name)
+                            _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name, time_dim)
                             output_rows.extend(rows_for_granule)
                             batch_rows.extend(rows_for_granule)
                         else:
@@ -683,7 +774,7 @@ def _execute_plan(
                                 row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
                                 row["granule_time"] = granule_time
-                                _extract_nearest(ds, row, variables, lon_name, lat_name)
+                                _extract_nearest(ds, row, variables, lon_name, lat_name, time_dim)
                                 output_rows.append(row)
                                 batch_rows.append(row)
 
@@ -865,12 +956,21 @@ def _extract_nearest(
     variables: list[str],
     lon_name: str,
     lat_name: str,
+    time_dim: str | None = None,
 ) -> None:
     """Extract values using ``ds.sel(..., method='nearest')`` (1-D coords).
 
     Modifies *row* in-place, including ``granule_lat`` and ``granule_lon``
     columns for the matched grid location.  ``granule_time`` is set by the
     caller from granule metadata before this function is called.
+
+    Parameters
+    ----------
+    time_dim:
+        Name of the time dimension in *ds*, as detected by
+        :func:`_find_time_dim`.  When not ``None``, each variable is
+        squeezed or nearest-selected along this dimension after spatial
+        selection so that the result is always free of the time axis.
     """
     # Extract the actual matched coordinates (nearest-neighbour grid position).
     try:
@@ -888,6 +988,8 @@ def _extract_nearest(
                 {lat_name: row["lat"], lon_name: row["lon"]},
                 method="nearest",
             )
+            if time_dim is not None:
+                selected = _select_time(selected, time_dim, row.get("time"))
             if selected.ndim == 0:
                 row[var] = float(selected)
             else:
@@ -905,6 +1007,7 @@ def _extract_xoak(
     variables: list[str],
     lon_name: str,
     lat_name: str,
+    time_dim: str | None = None,
 ) -> None:
     """Extract values using xoak nearest-neighbour (1-D or 2-D lat/lon arrays).
 
@@ -917,6 +1020,14 @@ def _extract_xoak(
     index over both dimensions.
 
     Modifies *row* in-place.
+
+    Parameters
+    ----------
+    time_dim:
+        Name of the time dimension in *ds*, as detected by
+        :func:`_find_time_dim`.  When not ``None``, each variable is
+        squeezed or nearest-selected along this dimension after spatial
+        selection so that the result is always free of the time axis.
     """
     try:
         from xoak.tree_adapters import SklearnKDTreeAdapter  # type: ignore[import-untyped]
@@ -973,6 +1084,8 @@ def _extract_xoak(
                 # variables become scalar (0-D) and 3-D variables (e.g. Rrs with
                 # a wavelength dimension) become 1-D.
                 squeezed = selected[var].squeeze()
+                if time_dim is not None:
+                    squeezed = _select_time(squeezed, time_dim, row.get("time"))
                 if squeezed.ndim == 0:
                     row[var] = float(squeezed)
                 else:
@@ -994,6 +1107,7 @@ def _extract_xoak_batch(
     variables: list[str],
     lon_name: str,
     lat_name: str,
+    time_dim: str | None = None,
 ) -> None:
     """Extract values for all *rows* using a single xoak k-d tree index.
 
@@ -1006,6 +1120,14 @@ def _extract_xoak_batch(
     ``SklearnKDTreeAdapter``.
 
     Modifies each dict in *rows* in-place.
+
+    Parameters
+    ----------
+    time_dim:
+        Name of the time dimension in *ds*, as detected by
+        :func:`_find_time_dim`.  When not ``None``, each variable is
+        squeezed or nearest-selected along this dimension after spatial
+        selection so that the result is always free of the time axis.
     """
     try:
         from xoak.tree_adapters import SklearnKDTreeAdapter  # type: ignore[import-untyped]
@@ -1084,6 +1206,8 @@ def _extract_xoak_batch(
                     # size-1 spatial dims so extra dims (e.g. wavelength) are
                     # kept intact.
                     point_data = var_data.isel({query_dim: i}).squeeze()
+                    if time_dim is not None:
+                        point_data = _select_time(point_data, time_dim, row.get("time"))
                     if point_data.ndim == 0:
                         row[var] = float(point_data)
                     else:
