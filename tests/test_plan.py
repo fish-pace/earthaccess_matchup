@@ -1328,6 +1328,24 @@ def _make_l3_dataset(lats: list[float], lons: list[float], seed: int = 0) -> xr.
     )
 
 
+def _make_l3_time_dataset(
+    lats: list[float],
+    lons: list[float],
+    times: list[str],
+    seed: int = 0,
+) -> xr.Dataset:
+    """Synthetic L3 dataset with a time dimension: sst has shape (time, lat, lon)."""
+    rng = np.random.default_rng(seed)
+    lat_arr = np.array(lats)
+    lon_arr = np.array(lons)
+    time_arr = pd.to_datetime(times)
+    sst = rng.uniform(20.0, 30.0, (len(time_arr), lat_arr.size, lon_arr.size)).astype(np.float32)
+    return xr.Dataset(
+        {"sst": (["time", "lat", "lon"], sst)},
+        coords={"time": time_arr, "lat": lat_arr, "lon": lon_arr},
+    )
+
+
 class TestMatchupWithPlan:
     """Tests for pc.matchup(plan) plan-based execution."""
 
@@ -4193,3 +4211,246 @@ class TestShowVariablesLayout:
         p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
         captured = capsys.readouterr()
         assert "NONE" in captured.out or "no geolocation" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Time dimension detection and handling
+# ---------------------------------------------------------------------------
+
+
+class TestFindTimeDim:
+    """Tests for _find_time_dim()."""
+
+    def test_returns_none_when_no_time_dim(self) -> None:
+        from point_collocation.core.engine import _find_time_dim
+
+        ds = xr.Dataset(coords={"lat": [0.0], "lon": [0.0]})
+        assert _find_time_dim(ds) is None
+
+    def test_detects_time_dimension_by_name(self) -> None:
+        from point_collocation.core.engine import _find_time_dim
+
+        times = pd.to_datetime(["2023-06-01"])
+        ds = xr.Dataset(
+            {"sst": (["time", "lat", "lon"], [[[1.0]]])},
+            coords={"time": times, "lat": [0.0], "lon": [0.0]},
+        )
+        assert _find_time_dim(ds) == "time"
+
+    def test_detects_Time_dimension_by_name(self) -> None:
+        from point_collocation.core.engine import _find_time_dim
+
+        ds = xr.Dataset(
+            {"sst": (["Time", "lat", "lon"], [[[1.0]]])},
+            coords={"Time": [0], "lat": [0.0], "lon": [0.0]},
+        )
+        assert _find_time_dim(ds) == "Time"
+
+    def test_ignores_non_time_3d_dims(self) -> None:
+        from point_collocation.core.engine import _find_time_dim
+
+        # 3D variable with wavelength, not time — should return None
+        ds = xr.Dataset(
+            {"Rrs": (["lat", "lon", "wavelength"], [[[0.001, 0.002]]])},
+            coords={"lat": [0.0], "lon": [0.0], "wavelength": [412, 443]},
+        )
+        assert _find_time_dim(ds) is None
+
+
+class TestSelectTime:
+    """Tests for _select_time()."""
+
+    def test_returns_unchanged_when_no_time_dim(self) -> None:
+        from point_collocation.core.engine import _select_time
+
+        da = xr.DataArray([1.0, 2.0], dims=["wavelength"])
+        result = _select_time(da, "time", pd.Timestamp("2023-06-01"))
+        assert result.dims == ("wavelength",)
+        assert list(result.values) == [1.0, 2.0]
+
+    def test_squeezes_single_time_step(self) -> None:
+        from point_collocation.core.engine import _select_time
+
+        times = pd.to_datetime(["2023-06-01"])
+        da = xr.DataArray([25.0], dims=["time"], coords={"time": times})
+        result = _select_time(da, "time", pd.Timestamp("2023-06-01"))
+        assert result.ndim == 0
+        assert float(result) == pytest.approx(25.0)
+
+    def test_selects_nearest_time_step(self) -> None:
+        from point_collocation.core.engine import _select_time
+
+        times = pd.to_datetime(["2023-06-01", "2023-06-02", "2023-06-03"])
+        da = xr.DataArray([10.0, 20.0, 30.0], dims=["time"], coords={"time": times})
+
+        # Nearest to 2023-06-02 → middle value
+        result = _select_time(da, "time", pd.Timestamp("2023-06-02"))
+        assert float(result) == pytest.approx(20.0)
+
+    def test_nearest_time_step_with_close_timestamp(self) -> None:
+        from point_collocation.core.engine import _select_time
+
+        times = pd.to_datetime(["2023-06-01", "2023-06-03"])
+        da = xr.DataArray([10.0, 30.0], dims=["time"], coords={"time": times})
+
+        # 2023-06-02 is equidistant; xarray picks one; just verify no exception and a real value
+        result = _select_time(da, "time", pd.Timestamp("2023-06-01T06:00:00"))
+        assert float(result) == pytest.approx(10.0)
+
+    def test_falls_back_to_first_step_when_point_time_is_nat(self) -> None:
+        from point_collocation.core.engine import _select_time
+
+        times = pd.to_datetime(["2023-06-01", "2023-06-02"])
+        da = xr.DataArray([10.0, 20.0], dims=["time"], coords={"time": times})
+
+        result = _select_time(da, "time", pd.NaT)
+        assert float(result) == pytest.approx(10.0)
+
+    def test_falls_back_to_first_step_when_point_time_is_none(self) -> None:
+        from point_collocation.core.engine import _select_time
+
+        times = pd.to_datetime(["2023-06-01", "2023-06-02"])
+        da = xr.DataArray([10.0, 20.0], dims=["time"], coords={"time": times})
+
+        result = _select_time(da, "time", None)
+        assert float(result) == pytest.approx(10.0)
+
+
+class TestTimeDimMatchup:
+    """Integration tests: matchup with (time, lat, lon) variables."""
+
+    def _make_plan_with_nc(
+        self,
+        nc_path: str,
+        monkeypatch: pytest.MonkeyPatch,
+        lat: float = 0.0,
+        lon: float = 0.0,
+        point_time: str = "2023-06-01T12:00:00",
+    ) -> "Plan":
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        pts = pd.DataFrame(
+            {"lat": [lat], "lon": [lon], "time": pd.to_datetime([point_time])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        return Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+    def test_single_time_step_returns_value_not_nan(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Variable with one time step (time, lat, lon) must return a real value."""
+        nc_path = str(tmp_path / "single_time.nc")
+        _make_l3_time_dataset(
+            [-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0],
+            times=["2023-06-01T00:00:00"],
+            seed=1,
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        p = self._make_plan_with_nc(nc_path, monkeypatch)
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert len(result) == 1
+        assert "sst" in result.columns
+        assert not math.isnan(result.loc[0, "sst"]), (
+            "sst must be a real value, not NaN, when the dataset has a single time step"
+        )
+
+    def test_multiple_time_steps_selects_nearest(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With multiple time steps, the nearest to the point time is selected."""
+        lats = [-90.0, 0.0, 90.0]
+        lons = [-180.0, 0.0, 180.0]
+        times = ["2023-06-01T00:00:00", "2023-06-02T00:00:00"]
+
+        # Build a dataset where time-step 0 has sst=10 and time-step 1 has sst=20 at (0, 0)
+        lat_arr = np.array(lats)
+        lon_arr = np.array(lons)
+        time_arr = pd.to_datetime(times)
+        sst = np.zeros((len(time_arr), lat_arr.size, lon_arr.size), dtype=np.float32)
+        lat_idx = 1  # lat=0
+        lon_idx = 1  # lon=0
+        sst[0, lat_idx, lon_idx] = 10.0
+        sst[1, lat_idx, lon_idx] = 20.0
+        ds = xr.Dataset(
+            {"sst": (["time", "lat", "lon"], sst)},
+            coords={"time": time_arr, "lat": lat_arr, "lon": lon_arr},
+        )
+        nc_path = str(tmp_path / "multi_time.nc")
+        ds.to_netcdf(nc_path, engine="netcdf4")
+
+        # Point timestamp near 2023-06-02 → nearest is index 1 → sst=20
+        p = self._make_plan_with_nc(nc_path, monkeypatch, point_time="2023-06-02T06:00:00")
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert len(result) == 1
+        assert "sst" in result.columns
+        assert not math.isnan(result.loc[0, "sst"])
+        assert result.loc[0, "sst"] == pytest.approx(20.0)
+
+    def test_no_time_dim_still_works(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Variables without a time dimension continue to work correctly."""
+        nc_path = str(tmp_path / "no_time.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=3).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+
+        p = self._make_plan_with_nc(nc_path, monkeypatch)
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert len(result) == 1
+        assert "sst" in result.columns
+        assert not math.isnan(result.loc[0, "sst"])
+
+    def test_3d_wavelength_variable_not_broken_by_time_fix(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """3D variable (lat, lon, wavelength) must still expand to per-wavelength columns."""
+        wavelengths = [412, 443, 490]
+        nc_path = str(tmp_path / "rrs_no_time.nc")
+        _make_l3_3d_dataset(
+            [-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], wavelengths, seed=4
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/rrs.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            variables=["Rrs"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "Rrs" not in result.columns
+        for wl in wavelengths:
+            assert f"Rrs_{wl}" in result.columns
+        assert len(result) == 1
