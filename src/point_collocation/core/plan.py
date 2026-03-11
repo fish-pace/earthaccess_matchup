@@ -378,8 +378,8 @@ class Plan:
             If the plan contains no granules.
         """
         from point_collocation.core._open_method import (
+            _apply_coords,
             _build_effective_open_kwargs,
-            _find_geoloc_pair,
             _merge_datatree_with_spec,
             _normalize_open_method,
             _open_datatree_fn,
@@ -446,7 +446,7 @@ class Plan:
 
         # Geolocation detection results.
         try:
-            lon_n, lat_n = _find_geoloc_pair(ds_flat)
+            ds_flat, lon_n, lat_n = _apply_coords(ds_flat, spec)
             lon_var = ds_flat.coords[lon_n] if lon_n in ds_flat.coords else ds_flat[lon_n]
             lat_var = ds_flat.coords[lat_n] if lat_n in ds_flat.coords else ds_flat[lat_n]
             print(
