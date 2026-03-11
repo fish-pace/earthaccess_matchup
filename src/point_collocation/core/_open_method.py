@@ -549,6 +549,9 @@ def _merge_datatree_with_spec(dt: object, spec: dict) -> xr.Dataset:
     return xr.merge(datasets, **effective_merge_kwargs)
 
 
+_PHONY_DIM_PATTERN = re.compile(r"^phony_dim_\d+$")
+
+
 def _safe_align_phony_dims(datasets: list[xr.Dataset]) -> list[xr.Dataset]:
     """Conservative phony-dim alignment to enable merging datasets.
 
@@ -569,12 +572,11 @@ def _safe_align_phony_dims(datasets: list[xr.Dataset]) -> list[xr.Dataset]:
     list[xr.Dataset]
         Datasets with phony dims renamed (or unchanged if ambiguous).
     """
-    phony_pattern = re.compile(r"^phony_dim_\d+$")
     canonical = ("y", "x")
 
     result = list(datasets)
     for i, ds in enumerate(datasets):
-        phony_dims = [dim for dim in ds.dims if phony_pattern.match(dim)]
+        phony_dims = [dim for dim in ds.dims if _PHONY_DIM_PATTERN.match(dim)]
         if not phony_dims:
             continue
         phony_sorted = sorted(phony_dims)

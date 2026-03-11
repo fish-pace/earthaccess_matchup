@@ -211,10 +211,14 @@ class Plan:
         Returns
         -------
         xarray.Dataset
+            The caller is responsible for closing the dataset when finished
+            (e.g. ``ds.close()`` or ``with plan.open_dataset(...) as ds:``).
         """
         from point_collocation.core._open_method import (
+            _build_effective_open_kwargs,
+            _merge_datatree_with_spec,
             _normalize_open_method,
-            _open_as_flat_dataset,
+            _open_datatree_fn,
         )
 
         try:
@@ -225,6 +229,8 @@ class Plan:
                 "Install it with: pip install earthaccess"
             ) from exc
 
+        import xarray as xr
+
         effective_open_method = "auto" if open_method is None else open_method
         spec = _normalize_open_method(effective_open_method, open_dataset_kwargs)
 
@@ -233,9 +239,29 @@ class Plan:
             raise RuntimeError(
                 f"Expected 1 file object from earthaccess.open, got {len(file_objs)}."
             )
+        file_obj = file_objs[0]
 
-        with _open_as_flat_dataset(file_objs[0], spec) as (ds, _lon, _lat):  # type: ignore[arg-type]
-            return ds
+        xarray_open = spec.get("xarray_open", "dataset")
+        effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+
+        if xarray_open == "datatree":
+            dt = _open_datatree_fn(file_obj, effective_kwargs)
+            try:
+                return _merge_datatree_with_spec(dt, spec)
+            finally:
+                if hasattr(dt, "close"):
+                    dt.close()
+
+        if xarray_open in ("dataset", "auto"):
+            # For the dataset and auto paths, return an open dataset whose
+            # lifecycle is managed by the caller.  Auto tries the fast path
+            # only; if the caller needs datatree fallback they should use
+            # open_method="datatree-merge" explicitly.
+            return xr.open_dataset(file_obj, **effective_kwargs)  # type: ignore[arg-type]
+
+        raise ValueError(
+            f"open_method['xarray_open']={xarray_open!r} is not valid for open_dataset."
+        )
 
     def open_mfdataset(
         self,
