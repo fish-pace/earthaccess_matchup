@@ -33,12 +33,12 @@ Quick start
     )
 
     # Inspect what variables are available before running the full matchup
-    plan.show_variables(geometry="grid")
+    plan.show_variables()
 
     # Open a single granule interactively
     ds = plan.open_dataset(plan[0])
 
-    out = pc.matchup(plan, geometry="grid", variables=["Rrs"])
+    out = pc.matchup(plan, variables=["Rrs"])
 
 Optional xarray accessor
 -------------------------

@@ -1478,7 +1478,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         mock_ea.search_data.assert_not_called()
 
     def test_matchup_with_plan_calls_open(
@@ -1513,7 +1513,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
 
     def test_matchup_plan_zero_match_returns_nan_row(
@@ -1537,7 +1537,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert math.isnan(result.loc[0, "sst"])
         assert "granule_id" in result.columns
@@ -1573,7 +1573,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
         assert result.loc[0, "granule_id"] == "https://example.com/g.nc"
@@ -1618,7 +1618,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 2, "One row per (point, granule) pair"
         assert set(result["granule_id"]) == {
             "https://example.com/a.nc",
@@ -1646,7 +1646,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid")  # no variables kwarg
+        result = pc.matchup(p, open_method="dataset")  # no variables kwarg
         assert "chlor_a" in result.columns
 
     def test_matchup_plan_output_includes_original_columns(
@@ -1675,7 +1675,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid")
+        result = pc.matchup(p, open_method="dataset")
         assert "station_id" in result.columns
         assert result.loc[0, "station_id"] == "STA001"
 
@@ -1713,7 +1713,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
@@ -1755,7 +1755,7 @@ class TestMatchupWithPlan:
 
         # This is the key test: passing open_dataset_kwargs with chunks={} (the original
         # bug report scenario) must not break 3D variable expansion.
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
         assert "Rrs" not in result.columns, "bare 'Rrs' column should be dropped after expansion"
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns, f"Rrs_{wl} column missing"
@@ -1801,7 +1801,7 @@ class TestMatchupWithPlan:
         )
 
         # This is the regression test: chunks={} must NOT cause 2D variables to return NaN
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"chunks": {}, "engine": "netcdf4"})
         assert len(result) == 1
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"]), (
@@ -1839,7 +1839,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"}, silent=False)
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"}, silent=False)
         captured = capsys.readouterr()
         assert "granules" in captured.out
         assert "processed" in captured.out
@@ -1875,7 +1875,7 @@ class TestMatchupWithPlan:
             time_buffer=pd.Timedelta(0),
         )
 
-        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"}, silent=True)
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"}, silent=True)
         captured = capsys.readouterr()
         assert captured.out == ""
 
@@ -1926,7 +1926,7 @@ class TestMatchupWithPlan:
         save_dir = tmp_path / "_temp_data"
         pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=True,
             batch_size=1,
@@ -1973,7 +1973,7 @@ class TestMatchupWithPlan:
         save_dir = tmp_path / "_temp_data"
         result = pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=True,
             save_dir=save_dir,
@@ -2032,7 +2032,7 @@ class TestMatchupWithPlan:
         # batch_size=1 → 3 lines of output for 3 granules
         pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=False,
             batch_size=1,
@@ -2070,7 +2070,7 @@ class TestMatchupWithPlan:
 
         new_dir = tmp_path / "does_not_exist" / "_temp_data"
         assert not new_dir.exists()
-        pc.matchup(p, geometry="grid", silent=True, save_dir=new_dir)
+        pc.matchup(p, open_method="dataset", silent=True, save_dir=new_dir)
         assert new_dir.exists()
 
     def test_matchup_opens_files_per_batch_not_all_at_once(
@@ -2134,7 +2134,7 @@ class TestMatchupWithPlan:
         # batch_size=1 → earthaccess.open called 3 times, once per granule
         pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=True,
             batch_size=1,
@@ -2229,7 +2229,8 @@ class TestMatchupWithPlan:
 
         pc.matchup(
             plan,
-            geometry="swath",
+            open_method="datatree-merge",
+            spatial_method="xoak",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=True,
             batch_size=1000,  # all 3 granules in one batch
@@ -2317,7 +2318,7 @@ class TestMatchupWithPlan:
 
         pc.matchup(
             plan,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=True,
             batch_size=1000,  # all 3 granules in one batch
@@ -2399,7 +2400,7 @@ class TestNewOutputColumns:
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
         p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert "pc_id" in result.columns
         assert result.loc[0, "pc_id"] == 0
 
@@ -2409,7 +2410,7 @@ class TestNewOutputColumns:
         """pc_id column is present even for points with zero matching granules."""
         p = self._make_plan_zero_match(monkeypatch)
 
-        result = pc.matchup(p, geometry="grid")
+        result = pc.matchup(p, open_method="dataset")
         assert "pc_id" in result.columns
         assert result.loc[0, "pc_id"] == 0
 
@@ -2453,7 +2454,7 @@ class TestNewOutputColumns:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 2
         # Both output rows trace back to the same input point (row 0)
         assert list(result["pc_id"]) == [0, 0]
@@ -2466,7 +2467,7 @@ class TestNewOutputColumns:
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
         p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert "granule_lat" in result.columns
         assert "granule_lon" in result.columns
         # Point is at (0, 0); the nearest grid point in [-90, 0, 90] x [-180, 0, 180]
@@ -2486,7 +2487,7 @@ class TestNewOutputColumns:
         end = pd.Timestamp("2023-06-01T23:59:59Z")
         expected_time = begin + (end - begin) / 2
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert "granule_time" in result.columns
         assert result.loc[0, "granule_time"] == expected_time
 
@@ -2505,7 +2506,7 @@ class TestNewOutputColumns:
         end = pd.Timestamp("2023-06-01T23:59:59Z")
         expected_time = begin + (end - begin) / 2
 
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert "granule_time" in result.columns
         # Must match the metadata midpoint, not the dataset's time coordinate.
         assert result.loc[0, "granule_time"] == expected_time
@@ -2516,7 +2517,7 @@ class TestNewOutputColumns:
         """granule_lat, granule_lon are NaN and granule_time is NaT for zero-match rows."""
         p = self._make_plan_zero_match(monkeypatch)
 
-        result = pc.matchup(p, geometry="grid")
+        result = pc.matchup(p, open_method="dataset")
         assert math.isnan(result.loc[0, "granule_lat"])
         assert math.isnan(result.loc[0, "granule_lon"])
         assert pd.isnull(result.loc[0, "granule_time"])
@@ -2529,7 +2530,7 @@ class TestNewOutputColumns:
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
         p = self._make_plan_single(tmp_path, monkeypatch, nc_path)
 
-        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         captured = capsys.readouterr()
         assert captured.out == ""
 
@@ -2580,7 +2581,7 @@ class TestNewOutputColumns:
 
         # With silent=False and default batch_size, only one progress line should appear
         # (all 3 granules processed in a single batch).
-        pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"}, silent=False)
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"}, silent=False)
         captured = capsys.readouterr()
         lines = [ln for ln in captured.out.strip().splitlines() if ln.strip()]
         assert len(lines) == 1, (
@@ -2664,7 +2665,7 @@ class TestGranuleRange:
 
         df = pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=True,
             batch_size=10,
@@ -2691,7 +2692,7 @@ class TestGranuleRange:
 
         pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             open_dataset_kwargs={"engine": "netcdf4"},
             silent=False,
             batch_size=1,
@@ -2727,11 +2728,11 @@ class TestGranuleRange:
 
         # start > end is caught before execution
         with pytest.raises(ValueError, match="granule_range"):
-            pc.matchup(p_no_granules, geometry="grid", silent=True, granule_range=(5, 2))
+            pc.matchup(p_no_granules, open_method="dataset", silent=True, granule_range=(5, 2))
 
         # start < 1 is caught before execution
         with pytest.raises(ValueError, match="granule_range"):
-            pc.matchup(p_no_granules, geometry="grid", silent=True, granule_range=(0, 5))
+            pc.matchup(p_no_granules, open_method="dataset", silent=True, granule_range=(0, 5))
 
         # start or end exceeds total matched granules (caught at execution time)
         p_with_granules, nc_files = self._make_plan(tmp_path, n=3)
@@ -2740,7 +2741,7 @@ class TestGranuleRange:
         with pytest.raises(ValueError, match="granule_range"):
             pc.matchup(
                 p_with_granules,
-                geometry="grid",
+                open_method="dataset",
                 open_dataset_kwargs={"engine": "netcdf4"},
                 silent=True,
                 granule_range=(2, 10),  # end=10 exceeds 3 matched granules
@@ -3021,10 +3022,10 @@ class TestPlanOpenDataset:
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
         mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4", decode_timedelta=False)
 
-    def test_open_dataset_geometry_grid(
+    def test_open_dataset_default_uses_auto(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """open_dataset(result, geometry='grid') uses xr.open_dataset."""
+        """open_dataset(result, open_method='dataset') uses xr.open_dataset."""
         nc_path = str(tmp_path / "test.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
             nc_path, engine="netcdf4"
@@ -3046,33 +3047,10 @@ class TestPlanOpenDataset:
             time_buffer=pd.Timedelta(0),
         )
 
-        ds = p.open_dataset(p[0], geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        ds = p.open_dataset(p[0], open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert isinstance(ds, xr.Dataset)
         assert "sst" in ds
         ds.close()
-
-    def test_open_dataset_invalid_geometry_raises(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """open_dataset with invalid geometry raises ValueError."""
-        mock_ea = MagicMock()
-        mock_ea.open.return_value = ["dummy"]
-        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
-
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[object()],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-
-        with pytest.raises(ValueError, match="geometry"):
-            p.open_dataset(p[0], geometry="bad")
 
     def test_open_dataset_invalid_open_method_raises(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -3097,10 +3075,10 @@ class TestPlanOpenDataset:
         with pytest.raises(ValueError, match="open_method"):
             p.open_dataset(p[0], open_method="bad")
 
-    def test_open_mfdataset_with_geometry_grid_uses_open_mfdataset(
+    def test_open_mfdataset_with_open_method_dataset_uses_open_mfdataset(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """open_mfdataset(results, geometry='grid') uses xr.open_mfdataset."""
+        """open_mfdataset(results, open_method='dataset') uses xr.open_mfdataset."""
         nc_a = str(tmp_path / "a.nc")
         nc_b = str(tmp_path / "b.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(
@@ -3128,15 +3106,15 @@ class TestPlanOpenDataset:
 
         fake_ds = xr.Dataset({"sst": (["lat", "lon"], [[1.0]])}, coords={"lat": [0.0], "lon": [0.0]})
         with patch("xarray.open_mfdataset", return_value=fake_ds) as mock_mfd:
-            ds = p.open_mfdataset(fake_results, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+            ds = p.open_mfdataset(fake_results, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
 
         assert ds is fake_ds
         mock_mfd.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4", decode_timedelta=False)
 
-    def test_open_mfdataset_geometry_swath_concatenates(
+    def test_open_mfdataset_datatree_merge_concatenates(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """open_mfdataset(results, geometry='swath') opens each as DataTree-merge and concatenates."""
+        """open_mfdataset(results, open_method='datatree-merge') opens each as DataTree-merge and concatenates."""
         nc_a = str(tmp_path / "swath_a.nc")
         nc_b = str(tmp_path / "swath_b.nc")
         _make_l2_swath_dataset(nrows=3, ncols=4, seed=1).to_netcdf(nc_a, engine="netcdf4")
@@ -3161,7 +3139,7 @@ class TestPlanOpenDataset:
 
         ds = p.open_mfdataset(
             fake_results,
-            geometry="swath",
+            open_method="datatree-merge",
             open_dataset_kwargs={"engine": "netcdf4"},
         )
         # Result is a Dataset with a "granule" dimension from concatenation.
@@ -3197,7 +3175,7 @@ class TestPlanShowVariables:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
         captured = capsys.readouterr()
         assert "Dimensions" in captured.out
         assert "Variables" in captured.out
@@ -3216,7 +3194,7 @@ class TestPlanShowVariables:
             time_buffer=pd.Timedelta(0),
         )
         with pytest.raises(ValueError, match="No granules"):
-            p.show_variables(geometry="grid")
+            p.show_variables()
 
 
 # ---------------------------------------------------------------------------
@@ -3256,7 +3234,7 @@ class TestMatchupVariablesKwarg:
             time_buffer=pd.Timedelta(0),
         )
 
-        result = pc.matchup(p, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"])
 
@@ -3293,7 +3271,7 @@ class TestMatchupVariablesKwarg:
         )
 
         with pytest.raises(ValueError, match="nonexistent_var"):
-            pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+            pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
 
     def test_matchup_new_api_no_variables_in_plan(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -3329,7 +3307,7 @@ class TestMatchupVariablesKwarg:
         assert p.variables == []
 
         # Pass variables to matchup() instead
-        result = pc.matchup(p, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         assert "sst" in result.columns
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
@@ -3404,7 +3382,7 @@ class TestMatchupWithSubsetPlan:
         assert isinstance(subset_plan, Plan)
         assert len(subset_plan.points) == 3
 
-        result = pc.matchup(subset_plan, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(subset_plan, open_method="dataset", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         # One row per (point × granule) — 3 points, 1 granule each
         assert len(result) == 3
         assert "sst" in result.columns
@@ -3421,7 +3399,7 @@ class TestMatchupWithSubsetPlan:
         monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
 
         subset_plan = p[0:2]
-        pc.matchup(subset_plan, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        pc.matchup(subset_plan, open_method="dataset", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
 
         # Only the 2 results for the first 2 points should have been opened.
         opened_results = mock_ea.open.call_args[0][0]
@@ -3443,7 +3421,7 @@ class TestMatchupWithSubsetPlan:
         subset_plan = p[2:]
         assert len(subset_plan.points) == 2
 
-        result = pc.matchup(subset_plan, geometry="grid", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(subset_plan, open_method="dataset", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 2
 
 
@@ -3494,13 +3472,65 @@ def _make_l2_swath_3d_dataset(
     )
 
 
-class TestGeometryParameter:
-    """Tests for the required geometry parameter in pc.matchup()."""
+class TestOpenMethodParameter:
+    """Tests for the open_method parameter in pc.matchup()."""
 
-    def test_missing_geometry_raises(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    def test_invalid_open_method_string_raises(self) -> None:
+        """Invalid open_method string raises ValueError mentioning 'open_method'."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        with pytest.raises(ValueError, match="open_method"):
+            pc.matchup(p, open_method="invalid")
+
+    def test_invalid_open_method_dict_unknown_key_raises(self) -> None:
+        """open_method dict with unknown key raises ValueError mentioning 'unknown keys'."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        with pytest.raises(ValueError, match="unknown keys"):
+            pc.matchup(p, open_method={"unknown_key": "val"})
+
+    def test_invalid_open_method_xarray_open_raises(self) -> None:
+        """open_method dict with invalid xarray_open value raises ValueError."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+        with pytest.raises(ValueError):
+            pc.matchup(p, open_method={"xarray_open": "invalid"})
+
+    def test_matchup_without_open_method_uses_auto(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Calling matchup() without geometry must raise TypeError."""
+        """Calling matchup() without open_method uses 'auto' default and does not raise."""
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = []
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
         pts = pd.DataFrame(
             {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
         )
@@ -3512,39 +3542,9 @@ class TestGeometryParameter:
             source_kwargs={"short_name": "TEST"},
             time_buffer=pd.Timedelta(0),
         )
-        with pytest.raises(TypeError, match="geometry"):
-            pc.matchup(p)  # type: ignore[call-arg]
-
-    def test_invalid_geometry_raises(self) -> None:
-        """Invalid geometry value raises ValueError."""
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-        with pytest.raises(ValueError, match="geometry"):
-            pc.matchup(p, geometry="spheroid")
-
-    def test_grid_geometry_uses_dataset_open_method_by_default(self) -> None:
-        """geometry='grid' should default open_method to 'dataset'."""
-        from point_collocation.core.engine import _VALID_OPEN_METHODS
-
-        # Just validate the logic, not actual execution
-        open_method = "dataset"  # expected default for grid
-        assert open_method in _VALID_OPEN_METHODS
-
-    def test_swath_geometry_uses_datatree_merge_open_method_by_default(self) -> None:
-        """geometry='swath' should default open_method to 'datatree-merge'."""
-        from point_collocation.core.engine import _VALID_OPEN_METHODS
-
-        open_method = "datatree-merge"  # expected default for swath
-        assert open_method in _VALID_OPEN_METHODS
+        # Zero-match points return NaN rows immediately without opening granules
+        result = pc.matchup(p)
+        assert len(result) == 1
 
 
 class TestGeolocDetection:
@@ -3751,18 +3751,18 @@ class TestGeolocDetectionCfXarray:
             _find_geoloc_pair(ds)
 
 
-class TestGeometryEnforcement:
-    """Tests for _check_geometry()."""
+class TestSpatialCompatCheck:
+    """Tests for _check_spatial_compat()."""
 
-    def test_grid_1d_ok(self) -> None:
-        from point_collocation.core.engine import _check_geometry
+    def test_nearest_1d_ok(self) -> None:
+        from point_collocation.core.engine import _check_spatial_compat
 
         ds = xr.Dataset(coords={"lon": [0.0], "lat": [0.0]})
         # Should not raise
-        _check_geometry(ds, "lon", "lat", "grid")
+        _check_spatial_compat(ds, "lon", "lat", "nearest")
 
-    def test_grid_2d_raises(self) -> None:
-        from point_collocation.core.engine import _check_geometry
+    def test_nearest_2d_raises(self) -> None:
+        from point_collocation.core.engine import _check_spatial_compat
 
         ds = xr.Dataset(
             {
@@ -3770,27 +3770,22 @@ class TestGeometryEnforcement:
                 "lat": (["nrows", "ncols"], [[0.0]]),
             }
         )
-        with pytest.raises(ValueError, match="geometry='grid'.*Try geometry='swath'"):
-            _check_geometry(ds, "lon", "lat", "grid")
+        with pytest.raises(ValueError, match="spatial_method='nearest'"):
+            _check_spatial_compat(ds, "lon", "lat", "nearest")
 
-    def test_swath_2d_ok(self) -> None:
-        from point_collocation.core.engine import _check_geometry
+    def test_xoak_any_dims_ok(self) -> None:
+        from point_collocation.core.engine import _check_spatial_compat
 
-        ds = xr.Dataset(
+        ds_2d = xr.Dataset(
             {
                 "lon": (["nrows", "ncols"], [[0.0]]),
                 "lat": (["nrows", "ncols"], [[0.0]]),
             }
         )
-        # Should not raise
-        _check_geometry(ds, "lon", "lat", "swath")
-
-    def test_swath_1d_raises(self) -> None:
-        from point_collocation.core.engine import _check_geometry
-
-        ds = xr.Dataset(coords={"lon": [0.0], "lat": [0.0]})
-        with pytest.raises(ValueError, match="geometry='swath'.*Try geometry='grid'"):
-            _check_geometry(ds, "lon", "lat", "swath")
+        ds_1d = xr.Dataset(coords={"lon": [0.0], "lat": [0.0]})
+        # Should not raise for either dimensionality
+        _check_spatial_compat(ds_2d, "lon", "lat", "xoak")
+        _check_spatial_compat(ds_1d, "lon", "lat", "xoak")
 
 
 class TestMissingXoak:
@@ -3824,16 +3819,16 @@ class TestMissingXoak:
         )
 
         with pytest.raises(ImportError, match="xoak"):
-            pc.matchup(p, geometry="swath", spatial_method="xoak")
+            pc.matchup(p, spatial_method="xoak")
 
 
 class TestMissingVariableErrorMessage:
     """Tests for improved error message when variables are missing."""
 
-    def test_missing_var_error_includes_geometry_open_method_spatial(
+    def test_missing_var_error_includes_open_method_and_spatial_method(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Error for missing variable must include geometry/open_method/spatial_method."""
+        """Error for missing variable must include open_method/spatial_method."""
         nc_path = str(tmp_path / "test.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
             nc_path, engine="netcdf4"
@@ -3863,17 +3858,16 @@ class TestMissingVariableErrorMessage:
         )
 
         with pytest.raises(ValueError) as exc_info:
-            pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+            pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
 
         msg = str(exc_info.value)
         assert "no_such_var" in msg
-        assert "geometry=" in msg
         assert "open_method=" in msg
         assert "spatial_method=" in msg
 
 
 class TestXoakSpatialMethod:
-    """Tests for spatial_method='xoak' with both geometry='swath' and geometry='grid'."""
+    """Tests for spatial_method='xoak' with both open_method='datatree-merge' and open_method='dataset'."""
 
     def test_swath_matchup_returns_nearest_value(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -3919,7 +3913,7 @@ class TestXoakSpatialMethod:
 
         result = pc.matchup(
             p,
-            geometry="swath",
+            open_method="datatree-merge",
             variables=["sst"],
             spatial_method="xoak",
             open_dataset_kwargs={"engine": "netcdf4"},
@@ -3929,10 +3923,10 @@ class TestXoakSpatialMethod:
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
 
-    def test_grid_geometry_with_2d_data_raises(
+    def test_nearest_with_2d_data_raises(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """geometry='grid' with 2-D lat/lon raises a clear ValueError."""
+        """spatial_method='nearest' with 2-D lat/lon raises a clear ValueError."""
         nc_path = str(tmp_path / "swath.nc")
         _make_l2_swath_dataset(nrows=4, ncols=5).to_netcdf(nc_path, engine="netcdf4")
 
@@ -3960,10 +3954,10 @@ class TestXoakSpatialMethod:
             time_buffer=pd.Timedelta(0),
         )
 
-        with pytest.raises(ValueError, match="geometry='grid'.*Try geometry='swath'"):
+        with pytest.raises(ValueError, match="spatial_method='nearest'"):
             pc.matchup(
                 p,
-                geometry="grid",
+                open_method="dataset",
                 spatial_method="nearest",
                 open_dataset_kwargs={"engine": "netcdf4"},
             )
@@ -4011,7 +4005,7 @@ class TestXoakSpatialMethod:
 
         result = pc.matchup(
             p,
-            geometry="swath",
+            open_method="datatree-merge",
             variables=["Rrs"],
             spatial_method="xoak",
             open_dataset_kwargs={"engine": "netcdf4"},
@@ -4025,7 +4019,7 @@ class TestXoakSpatialMethod:
     def test_grid_matchup_with_xoak_returns_nearest_value(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """geometry='grid' + spatial_method='xoak' returns the nearest grid value."""
+        """open_method='dataset' + spatial_method='xoak' returns the nearest grid value."""
         pytest.importorskip("xoak")  # skip if xoak not installed
 
         lats = [-90.0, 0.0, 90.0]
@@ -4062,7 +4056,7 @@ class TestXoakSpatialMethod:
 
         result = pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             variables=["sst"],
             spatial_method="xoak",
             open_dataset_kwargs={"engine": "netcdf4"},
@@ -4075,7 +4069,7 @@ class TestXoakSpatialMethod:
     def test_grid_matchup_xoak_global_granule_returns_nearest_value(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """geometry='grid' + xoak on a global granule slices correctly and returns a value."""
+        """open_method='dataset' + xoak on a global granule slices correctly and returns a value."""
         pytest.importorskip("xoak")  # skip if xoak not installed
 
         # Large global grid (181 lats × 361 lons) with the query point near centre.
@@ -4114,7 +4108,7 @@ class TestXoakSpatialMethod:
 
         result = pc.matchup(
             p,
-            geometry="grid",
+            open_method="dataset",
             variables=["sst"],
             spatial_method="xoak",
             open_dataset_kwargs={"engine": "netcdf4"},
@@ -4169,13 +4163,11 @@ class TestXoakSpatialMethod:
 
         result = pc.matchup(
             p,
-            geometry="swath",
+            open_method="datatree-merge",
             variables=["sst"],
             spatial_method="xoak",
             open_dataset_kwargs={"engine": "netcdf4"},
         )
-
-        # Both points should be matched; neither should be NaN.
         assert "sst" in result.columns
         assert len(result) == 2
         assert not result["sst"].isna().any()
@@ -4303,7 +4295,7 @@ class TestXoakSpatialMethod:
 
 
 class TestShowVariablesLayout:
-    """Tests for plan.show_variables(geometry=...) with both open methods."""
+    """Tests for plan.show_variables() with both open methods."""
 
     def test_show_variables_dataset_layout_prints_dims_and_vars(
         self,
@@ -4311,7 +4303,7 @@ class TestShowVariablesLayout:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """show_variables(geometry='grid') prints dims, vars, and geo info."""
+        """show_variables() prints dims, vars, and geo info."""
         nc_path = str(tmp_path / "test.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
             nc_path, engine="netcdf4"
@@ -4332,7 +4324,7 @@ class TestShowVariablesLayout:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
         captured = capsys.readouterr()
         assert "Dimensions" in captured.out
         assert "Variables" in captured.out
@@ -4370,7 +4362,7 @@ class TestShowVariablesLayout:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
         captured = capsys.readouterr()
         assert "NONE" in captured.out or "no geolocation" in captured.out.lower()
 
@@ -4524,7 +4516,7 @@ class TestTimeDimMatchup:
         ).to_netcdf(nc_path, engine="netcdf4")
 
         p = self._make_plan_with_nc(nc_path, monkeypatch)
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"]), (
@@ -4557,7 +4549,7 @@ class TestTimeDimMatchup:
 
         # Point timestamp near 2023-06-02 → nearest is index 1 → sst=20
         p = self._make_plan_with_nc(nc_path, monkeypatch, point_time="2023-06-02T06:00:00")
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"])
@@ -4573,7 +4565,7 @@ class TestTimeDimMatchup:
         )
 
         p = self._make_plan_with_nc(nc_path, monkeypatch)
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert len(result) == 1
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"])
@@ -4611,7 +4603,7 @@ class TestTimeDimMatchup:
             source_kwargs={"short_name": "TEST"},
             time_buffer=pd.Timedelta(0),
         )
-        result = pc.matchup(p, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
         assert "Rrs" not in result.columns
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns
