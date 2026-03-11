@@ -801,7 +801,15 @@ def _extract_granule_meta(result: Any, *, result_index: int) -> GranuleMeta:
     begin = pd.Timestamp(rdt["BeginningDateTime"])
     end = pd.Timestamp(rdt["EndingDateTime"])
 
-    granule_id = _get_data_url(umm)
+    # Prefer result.data_links() over UMM parsing: earthaccess selects the
+    # correct URL (HTTPS vs S3) based on where the user is running.
+    links: list[str] = result.data_links() if hasattr(result, "data_links") else []
+    if links:
+        https_links = [url for url in links if not url.startswith("s3://")]
+        granule_id = https_links[0] if https_links else links[0]
+    else:
+        granule_id = _get_data_url(umm)
+
     bbox = _get_bbox(umm)
     polygon = _get_polygon_points(umm)
 
