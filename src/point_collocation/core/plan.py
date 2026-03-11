@@ -352,7 +352,7 @@ class Plan:
         self,
         open_method: str | dict | None = None,
         open_dataset_kwargs: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> xr.Dataset | object:
         """Open the first granule and print its dimensions and variables.
 
         Opens the first result in the plan, prints the dataset dimensions,
@@ -360,17 +360,26 @@ class Plan:
         users discover available variable names before running a full
         :func:`~point_collocation.matchup`.
 
+        Returns the opened xarray Dataset or DataTree so that interactive
+        environments (e.g. Jupyter) display the full structure using xarray's
+        collapsible repr.
+
         Parameters
         ----------
         open_method:
             How to open the granule.  Accepts the same string presets or
             dict spec as :func:`~point_collocation.matchup`.  Defaults to
-            ``"auto"``.  When the spec uses ``"datatree"``, DataTree group
-            details are also printed.
+            ``"auto"``.
         open_dataset_kwargs:
             Keyword arguments forwarded to the xarray open function.
             ``chunks`` defaults to ``{}`` (lazy/dask loading).  ``engine``
             defaults to ``"h5netcdf"`` when not specified.
+
+        Returns
+        -------
+        xr.Dataset or DataTree
+            The opened DataTree (when ``xarray_open="datatree"``) or merged
+            Dataset, available for further inspection.
 
         Raises
         ------
@@ -456,42 +465,21 @@ class Plan:
         except ValueError as exc:
             msg = str(exc)
             if "no geolocation variables found" in msg:
+                coords_val = display_spec.get("coords", "auto")
+                set_coords_val = display_spec.get("set_coords", True)
                 print(
-                    f"\nGeolocation: NONE detected with open_method={display_spec!r}. "
+                    f"\nGeolocation: NONE detected with "
+                    f"'coords': {coords_val!r}, 'set_coords': {set_coords_val!r}. "
                     "Try open_method='datatree-merge' or specify "
                     "open_method={'coords': {'lat': '...', 'lon': '...'}}."
                 )
             else:
                 print(f"\nGeolocation: {msg}")
 
-        # For datatree, print group details at the end.
-        if dt is not None:
-            print("\nDataTree groups (detail):")
-            try:
-                # xarray DataTree API (>= 2024.x).
-                for node in dt.subtree:  # type: ignore[union-attr]
-                    path = node.path if hasattr(node, "path") else str(node.name)
-                    ds_node = node.ds
-                    if ds_node is not None:
-                        dims_str = dict(ds_node.sizes)
-                        vars_list = list(ds_node.data_vars)
-                        print(f"  {path or '/'}")
-                        print(f"    Dimensions: {dims_str}")
-                        print(f"    Variables: {vars_list}")
-                if hasattr(dt, "close"):
-                    dt.close()
-            except AttributeError:
-                # datatree package API.
-                for path, node in dt.items():  # type: ignore[union-attr]
-                    ds_node = node.ds
-                    if ds_node is not None:
-                        dims_str = dict(ds_node.sizes)
-                        vars_list = list(ds_node.data_vars)
-                        print(f"  {path or '/'}")
-                        print(f"    Dimensions: {dims_str}")
-                        print(f"    Variables: {vars_list}")
-                if hasattr(dt, "close"):
-                    dt.close()
+        # Return the DataTree (or merged Dataset) so that interactive environments
+        # (e.g. Jupyter) display it using xarray's collapsible repr instead of
+        # printing a verbose manual dump.
+        return dt if dt is not None else ds_flat
 
     # ------------------------------------------------------------------
     # Summary
