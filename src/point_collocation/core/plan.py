@@ -389,11 +389,12 @@ class Plan:
         file is an HDF5/NetCDF4 file.  Falls back to xarray when h5py is
         unavailable or the file format is not HDF5.
 
-        Prints a concise summary for each group: group name, variable names
-        with dimension names, dimension sizes, and geolocation detection
-        results.
+        Prints a concise summary for each group (from h5py), followed by a
+        flat merged ``Dimensions``/``Variables``/``Geolocation`` summary,
+        and then a ``Dataset Detail:`` section showing the xarray repr of
+        the merged flat dataset.
 
-        To obtain the full xarray representation use
+        To obtain the full xarray representation programmatically use
         ``plan.open_dataset(plan[0])`` instead.
 
         Parameters
@@ -455,17 +456,37 @@ class Plan:
         display_spec = {**spec, "open_kwargs": effective_kwargs}
         print(f"open_method: {display_spec!r}")
 
+        def _seek_back() -> None:
+            if hasattr(file_obj, "seek"):
+                try:
+                    file_obj.seek(0)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
         # ---------------------------------------------------------------
-        # Fast path: use h5py for metadata inspection (no data loading).
+        # Fast path: use h5py for per-group metadata inspection.
         # ---------------------------------------------------------------
         h5_info = _h5py_file_info(file_obj)
+        _seek_back()  # ensure file_obj is at start for subsequent xarray opens
         if h5_info is not None:
-            # Collect all variable names for geolocation detection.
+            # Determine which groups to include based on merge spec.
+            merge = spec.get("merge")
+            if merge == "root":
+                relevant_groups: set[str] | None = {"/"}
+            elif isinstance(merge, list):
+                relevant_groups = set(merge)
+            else:
+                # "all" or no merge key: include all discovered groups
+                relevant_groups = None
+
             all_var_names: set[str] = set()
-            for _group_path, vars_dict in h5_info:
-                all_var_names.update(vars_dict.keys())
+            merged_dims: dict[str, int] = {}
+            merged_vars: list[str] = []
 
             for group_path, vars_dict in h5_info:
+                if relevant_groups is not None and group_path not in relevant_groups:
+                    continue
+
                 print(f"\nGroup {group_path}")
                 # Collect dimension sizes from variable shapes.
                 dim_sizes: dict[str, int] = {}
@@ -473,6 +494,7 @@ class Plan:
                     for dim, size in zip(vinfo["dims"], vinfo["shape"]):
                         if dim and dim != "?":
                             dim_sizes.setdefault(dim, size)
+                            merged_dims.setdefault(dim, size)
                 if dim_sizes:
                     print(f"  Dimensions: {dim_sizes}")
 
@@ -483,24 +505,81 @@ class Plan:
                     ]
                     print(f"  Variables:  {', '.join(var_strs)}")
 
-            # Geolocation detection from variable names.
-            geo_pairs = [
-                (lon_n, lat_n)
-                for lon_n, lat_n in _GEOLOC_PAIRS
-                if lon_n in all_var_names and lat_n in all_var_names
-            ]
-            if geo_pairs:
-                lon_n, lat_n = geo_pairs[0]
-                print(f"\nGeolocation: ({lon_n!r}, {lat_n!r}) detected")
+                all_var_names.update(vars_dict.keys())
+                for vname in vars_dict:
+                    if vname not in merged_vars:
+                        merged_vars.append(vname)
+
+            # Flat merged summary across all relevant groups.
+            print(f"\nDimensions: {merged_dims}")
+            print(f"\nVariables: {merged_vars}")
+
+            # Geolocation detection — handles coords as dict, list, or 'auto'.
+            coords = spec.get("coords", "auto")
+            set_coords_val = spec.get("set_coords", True)
+            if isinstance(coords, dict):
+                lat_name = coords.get("lat")
+                lon_name = coords.get("lon")
+                if (
+                    lat_name and lon_name
+                    and lat_name in all_var_names
+                    and lon_name in all_var_names
+                ):
+                    print(f"\nGeolocation: ({lon_name!r}, {lat_name!r}) detected")
+                else:
+                    print(
+                        f"\nGeolocation: NONE detected with "
+                        f"'coords': {coords!r}, 'set_coords': {set_coords_val!r}."
+                    )
+            elif isinstance(coords, list):
+                missing = [n for n in coords if n not in all_var_names]
+                if not missing:
+                    geo_pairs = [
+                        (lon_n, lat_n)
+                        for lon_n, lat_n in _GEOLOC_PAIRS
+                        if lon_n in coords and lat_n in coords
+                    ]
+                    if geo_pairs:
+                        lon_n, lat_n = geo_pairs[0]
+                        print(f"\nGeolocation: ({lon_n!r}, {lat_n!r}) detected")
+                    else:
+                        print(f"\nGeolocation: {coords!r} found in dataset")
+                else:
+                    print(
+                        f"\nGeolocation: NONE — specified coords {missing!r} not found."
+                    )
             else:
-                coords_val = spec.get("coords", "auto")
-                set_coords_val = spec.get("set_coords", True)
-                print(
-                    f"\nGeolocation: NONE detected with "
-                    f"'coords': {coords_val!r}, 'set_coords': {set_coords_val!r}. "
-                    "Try open_method='datatree-merge' or specify "
-                    "open_method={'coords': {'lat': '...', 'lon': '...'}}."
-                )
+                # 'auto': check _GEOLOC_PAIRS
+                geo_pairs_found = [
+                    (lon_n, lat_n)
+                    for lon_n, lat_n in _GEOLOC_PAIRS
+                    if lon_n in all_var_names and lat_n in all_var_names
+                ]
+                if geo_pairs_found:
+                    lon_n, lat_n = geo_pairs_found[0]
+                    print(f"\nGeolocation: ({lon_n!r}, {lat_n!r}) detected")
+                else:
+                    print(
+                        f"\nGeolocation: NONE detected with "
+                        f"'coords': {coords!r}, 'set_coords': {set_coords_val!r}. "
+                        "Try open_method='datatree-merge' or specify "
+                        "open_method={'coords': {'lat': '...', 'lon': '...'}}."
+                    )
+
+            # Dataset Detail: open with xarray using dataset-based group merge
+            # (avoids slow datatree open; always uses xr.open_dataset per group).
+            try:
+                if merge is not None:
+                    ds_detail_spec = {**spec, "xarray_open": "dataset"}
+                    ds_detail = _open_and_merge_dataset_groups(
+                        file_obj, ds_detail_spec, effective_kwargs
+                    )
+                else:
+                    ds_detail = xr.open_dataset(file_obj, **effective_kwargs)  # type: ignore[arg-type]
+                print(f"\nDataset Detail:\n{ds_detail}")
+            except Exception:
+                pass  # Skip Dataset Detail if xarray open fails
+
             return
 
         # ---------------------------------------------------------------
@@ -553,6 +632,7 @@ class Plan:
             else:
                 print(f"\nGeolocation: {msg}")
 
+        print(f"\nDataset Detail:\n{ds_flat}")
 
     # ------------------------------------------------------------------
     # Summary

@@ -3320,7 +3320,7 @@ class TestShowVariablesH5py:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """show_variables() for a flat NetCDF4 prints Dimensions, Variables, Geolocation."""
+        """show_variables() for a flat NetCDF4 prints Dimensions, Variables, Geolocation, Dataset Detail."""
         nc_path = str(tmp_path / "flat.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
             nc_path, engine="netcdf4"
@@ -3333,6 +3333,7 @@ class TestShowVariablesH5py:
         assert "sst" in captured.out
         assert "Geolocation" in captured.out
         assert "lon" in captured.out
+        assert "Dataset Detail" in captured.out
 
     def test_show_variables_grouped_file_prints_groups_and_sst(
         self,
@@ -3350,6 +3351,33 @@ class TestShowVariablesH5py:
         assert "sst" in captured.out
         assert "Geolocation" in captured.out
         assert "lon" in captured.out
+        # The flat merged summary should also be present
+        assert "Dimensions:" in captured.out
+        assert "Variables:" in captured.out
+        # Dataset Detail section should appear
+        assert "Dataset Detail" in captured.out
+
+    def test_show_variables_coords_dict_detects_geolocation(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables() with coords={'lat': 'lat', 'lon': 'lon'} detects geolocation."""
+        nc_path = str(tmp_path / "grouped.nc")
+        _make_grouped_nc(nc_path)
+        p = self._make_plan(tmp_path, monkeypatch, nc_path)
+        open_method = {
+            "xarray_open": "dataset",
+            "merge": ["/", "/monthly"],
+            "open_kwargs": {"engine": "h5netcdf", "phony_dims": "sort"},
+            "coords": {"lat": "lat", "lon": "lon"},
+        }
+        p.show_variables(open_method=open_method)
+        captured = capsys.readouterr()
+        assert "Geolocation" in captured.out
+        # Should detect geolocation (not NONE) since lat and lon exist in the file
+        assert "NONE" not in captured.out
 
 
 class TestPlanShowVariables:
