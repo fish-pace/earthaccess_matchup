@@ -2883,7 +2883,7 @@ class TestPlanOpenDataset:
 
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
-        mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
+        mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4", decode_timedelta=False)
 
     def test_open_mfdataset_accepts_subset_plan(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -2945,7 +2945,7 @@ class TestPlanOpenDataset:
 
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
-        mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
+        mock_mfdataset.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4", decode_timedelta=False)
 
     def test_open_dataset_geometry_grid(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -3057,7 +3057,7 @@ class TestPlanOpenDataset:
             ds = p.open_mfdataset(fake_results, geometry="grid", open_dataset_kwargs={"engine": "netcdf4"})
 
         assert ds is fake_ds
-        mock_mfd.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4")
+        mock_mfd.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4", decode_timedelta=False)
 
     def test_open_mfdataset_geometry_swath_concatenates(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
