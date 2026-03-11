@@ -3278,6 +3278,25 @@ class TestDatasetMerge:
         assert isinstance(ds, xr.Dataset)
         assert "sst" in ds
 
+    def test_open_dataset_lazy_access_after_merge_does_not_raise(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dask lazy arrays from open_dataset+merge can be computed without 'file closed' error."""
+        nc_path = str(tmp_path / "grouped.nc")
+        _make_grouped_nc(nc_path)
+        p = self._make_plan(tmp_path, monkeypatch, [nc_path])
+        open_method = {
+            "xarray_open": "dataset",
+            "merge": ["/", "/monthly"],
+            "open_kwargs": {"engine": "h5netcdf", "phony_dims": "sort", "chunks": {}},
+            "coords": {"lat": "lat", "lon": "lon"},
+        }
+        ds = p.open_dataset(p[0], open_method=open_method)
+        assert isinstance(ds, xr.Dataset)
+        # Computing dask arrays must not raise RuntimeError: file closed
+        sst_values = ds["sst"].values
+        assert sst_values is not None
+
 
 # ---------------------------------------------------------------------------
 # Tests for show_variables with h5py fast path (Task 3)

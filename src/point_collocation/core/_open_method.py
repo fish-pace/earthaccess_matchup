@@ -520,11 +520,15 @@ def _open_and_merge_dataset_groups(
 ) -> xr.Dataset:
     """Open HDF5/NetCDF4 groups as :class:`xarray.Dataset` objects and merge.
 
-    This is the *dataset* analogue of :func:`_merge_datatree_with_spec`: it
-    opens each group specified by ``spec['merge']`` using
+    Opens each group specified by ``spec['merge']`` using
     ``xr.open_dataset(..., group=path)``, merges the results, and returns the
-    merged dataset.  Source datasets are closed after merging (mirroring the
-    DataTree path in :func:`_merge_datatree_with_spec`).
+    merged dataset.  Source datasets are **not** closed so that dask lazy arrays
+    can still access their underlying file handles after this function returns.
+    The source datasets remain alive as long as the merged dataset or its dask
+    arrays hold references to their underlying stores; they will be
+    garbage-collected (and their file handles released) when no longer
+    referenced.  The caller is responsible for closing the returned merged
+    dataset when finished (or allowing it to be garbage-collected).
 
     Parameters
     ----------
@@ -560,26 +564,24 @@ def _open_and_merge_dataset_groups(
         return xr.open_dataset(file_obj, **effective_kwargs)  # type: ignore[arg-type]
 
     opened: list[xr.Dataset] = []
-    try:
-        for path in group_paths:
-            kwargs = {**effective_kwargs, "group": path}
-            try:
-                ds = xr.open_dataset(file_obj, **kwargs)  # type: ignore[arg-type]
-                if ds.data_vars:
-                    opened.append(ds)
-                else:
-                    ds.close()
-            except Exception:
-                pass  # Skip unreadable groups silently (mirrors datatree merge behaviour)
-
-        return _merge_opened_datasets(opened, spec)
-    finally:
-        # Mirror the DataTree path: close sources after merging.
-        for ds in opened:
-            try:
+    for path in group_paths:
+        kwargs = {**effective_kwargs, "group": path}
+        try:
+            ds = xr.open_dataset(file_obj, **kwargs)  # type: ignore[arg-type]
+            if ds.data_vars:
+                opened.append(ds)
+            else:
                 ds.close()
-            except Exception:
-                pass
+        except Exception:
+            pass  # Skip unreadable groups silently (mirrors datatree merge behaviour)
+
+    # Do NOT close source datasets here.  When dask lazy loading is active
+    # (any truthy ``chunks`` specification such as ``{}``, ``"auto"``, or
+    # ``{"dim": 100}``), closing a source dataset closes its underlying file
+    # handle, making any dask arrays backed by that file uncomputable.  The
+    # source datasets remain open and will be garbage-collected once no live
+    # dask arrays reference their stores.
+    return _merge_opened_datasets(opened, spec)
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +961,7 @@ def _open_as_flat_dataset(
                             ds_grp.close()
                     except Exception:
                         pass  # Skip unreadable groups silently (mirrors datatree merge behaviour)
+                ds_merged = _merge_opened_datasets(opened, spec)
                 ds_merged, lon_name, lat_name = _apply_coords(ds_merged, spec)
                 yield (ds_merged, lon_name, lat_name)
             finally:
