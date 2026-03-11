@@ -42,8 +42,8 @@ def _make_result(
     bbox: tuple[float, float, float, float] | None = None,
     polygon: list[dict[str, float]] | None = None,
     data_url: str = "https://example.com/granule.nc",
-) -> dict:
-    """Build a minimal mock earthaccess result dict (dict-based format).
+) -> MagicMock:
+    """Build a minimal mock earthaccess result supporting dict-access and data_links().
 
     Supports BoundingRectangles or GPolygons spatial extent.
     """
@@ -76,23 +76,25 @@ def _make_result(
     else:
         pytest.fail("Either bbox or polygon must be provided")
 
-    return {
-        "umm": {
-            "TemporalExtent": {
-                "RangeDateTime": {
-                    "BeginningDateTime": begin,
-                    "EndingDateTime": end,
-                }
-            },
-            "SpatialExtent": spatial,
-            "RelatedUrls": [
-                {"Type": "GET DATA", "URL": data_url},
-            ],
-        }
+    umm: dict = {
+        "TemporalExtent": {
+            "RangeDateTime": {
+                "BeginningDateTime": begin,
+                "EndingDateTime": end,
+            }
+        },
+        "SpatialExtent": spatial,
+        "RelatedUrls": [
+            {"Type": "GET DATA", "URL": data_url},
+        ],
     }
+    mock_result = MagicMock()
+    mock_result.__getitem__ = lambda _, key: {"umm": umm}[key]
+    mock_result.data_links.return_value = [data_url]
+    return mock_result
 
 
-def _make_global_result(begin: str, end: str, data_url: str = "https://example.com/g.nc") -> dict:
+def _make_global_result(begin: str, end: str, data_url: str = "https://example.com/g.nc") -> MagicMock:
     """Convenience: result with global bounding box."""
     return _make_result(begin=begin, end=end, bbox=(-180, -90, 180, 90), data_url=data_url)
 
@@ -223,6 +225,78 @@ class TestGetDataUrl:
         umm = {"RelatedUrls": [{"Type": "OTHER", "URL": "https://x.com/"}]}
         with pytest.raises(ValueError):
             _get_data_url(umm)
+
+
+class TestExtractGranuleMetaUsesDataLinks:
+    """_extract_granule_meta must use result.data_links() for the granule URL."""
+
+    def _make_umm(self, data_url: str) -> dict:
+        return {
+            "TemporalExtent": {
+                "RangeDateTime": {
+                    "BeginningDateTime": "2023-06-01T00:00:00Z",
+                    "EndingDateTime": "2023-06-01T23:59:59Z",
+                }
+            },
+            "SpatialExtent": {
+                "HorizontalSpatialDomain": {
+                    "Geometry": {
+                        "BoundingRectangles": [
+                            {
+                                "WestBoundingCoordinate": -180.0,
+                                "SouthBoundingCoordinate": -90.0,
+                                "EastBoundingCoordinate": 180.0,
+                                "NorthBoundingCoordinate": 90.0,
+                            }
+                        ]
+                    }
+                }
+            },
+            "RelatedUrls": [{"Type": "GET DATA", "URL": data_url}],
+        }
+
+    def test_uses_data_links_when_available(self) -> None:
+        """granule_id must come from data_links(), not from UMM RelatedUrls."""
+        umm_url = "https://umm.example.com/umm_granule.nc"
+        links_url = "https://links.example.com/links_granule.nc"
+
+        result = MagicMock()
+        result.__getitem__ = lambda _, key: {"umm": self._make_umm(umm_url)}[key]
+        result.data_links.return_value = [links_url]
+
+        meta = _extract_granule_meta(result, result_index=0)
+        assert meta.granule_id == links_url
+
+    def test_prefers_https_over_s3_from_data_links(self) -> None:
+        """When data_links() returns both S3 and HTTPS, prefer HTTPS."""
+        result = MagicMock()
+        result.__getitem__ = lambda _, key: {"umm": self._make_umm("https://umm.example.com/g.nc")}[key]
+        result.data_links.return_value = [
+            "s3://bucket/granule.nc",
+            "https://https.example.com/granule.nc",
+        ]
+
+        meta = _extract_granule_meta(result, result_index=0)
+        assert meta.granule_id == "https://https.example.com/granule.nc"
+
+    def test_falls_back_to_umm_when_data_links_empty(self) -> None:
+        """When data_links() returns [], fall back to UMM RelatedUrls."""
+        umm_url = "https://umm.example.com/granule.nc"
+
+        result = MagicMock()
+        result.__getitem__ = lambda _, key: {"umm": self._make_umm(umm_url)}[key]
+        result.data_links.return_value = []
+
+        meta = _extract_granule_meta(result, result_index=0)
+        assert meta.granule_id == umm_url
+
+    def test_falls_back_to_umm_when_no_data_links_method(self) -> None:
+        """When result has no data_links() method, fall back to UMM RelatedUrls."""
+        umm_url = "https://umm.example.com/granule.nc"
+        result = {"umm": self._make_umm(umm_url)}
+
+        meta = _extract_granule_meta(result, result_index=0)
+        assert meta.granule_id == umm_url
 
 
 class TestGetBbox:
@@ -709,7 +783,7 @@ class TestPlanMapping:
         self,
         monkeypatch: pytest.MonkeyPatch,
         points: pd.DataFrame,
-        fake_results: list[dict],
+        fake_results: list[Any],
         time_buffer: str = "0h",
     ) -> Plan:
         """Helper: run pc.plan() with mocked earthaccess.search_data."""
