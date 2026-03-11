@@ -4608,3 +4608,367 @@ class TestTimeDimMatchup:
         for wl in wavelengths:
             assert f"Rrs_{wl}" in result.columns
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for the new open_method spec-based pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestOpenMethodNormalization:
+    """Tests for _normalize_open_method() - string presets and dict specs."""
+
+    def test_dataset_preset_expands_correctly(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method("dataset")
+        assert spec["xarray_open"] == "dataset"
+        assert spec["coords"] == "auto"
+        assert spec["set_coords"] is True
+
+    def test_datatree_merge_preset_expands_correctly(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method("datatree-merge")
+        assert spec["xarray_open"] == "datatree"
+        assert spec["merge"] == "all"
+        assert spec["coords"] == "auto"
+
+    def test_auto_preset_expands_correctly(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method("auto")
+        assert spec["xarray_open"] == "auto"
+        assert spec["coords"] == "auto"
+
+    def test_unknown_string_raises(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        with pytest.raises(ValueError, match="open_method"):
+            _normalize_open_method("bad_preset")
+
+    def test_dict_spec_fills_missing_keys(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method({"xarray_open": "dataset"})
+        assert spec["open_kwargs"] == {}
+        assert spec["coords"] == "auto"
+        assert spec["set_coords"] is True
+        assert spec["dim_renames"] is None
+
+    def test_dict_spec_datatree_fills_merge_defaults(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method({"xarray_open": "datatree"})
+        assert spec["merge"] == "all"
+        assert spec["merge_kwargs"] == {}
+
+    def test_dict_spec_unknown_key_raises(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        with pytest.raises(ValueError, match="unknown keys"):
+            _normalize_open_method({"xarray_open": "dataset", "bad_key": "value"})
+
+    def test_dict_spec_invalid_xarray_open_raises(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        with pytest.raises(ValueError, match="xarray_open"):
+            _normalize_open_method({"xarray_open": "invalid"})
+
+    def test_non_str_non_dict_raises(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        with pytest.raises(TypeError, match="string preset or dict spec"):
+            _normalize_open_method(42)  # type: ignore[arg-type]
+
+    def test_open_dataset_kwargs_merges_into_spec(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method("dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        assert spec["open_kwargs"]["engine"] == "netcdf4"
+
+    def test_open_dataset_kwargs_overrides_spec_open_kwargs(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method(
+            {"xarray_open": "dataset", "open_kwargs": {"engine": "h5netcdf"}},
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+        assert spec["open_kwargs"]["engine"] == "netcdf4"
+
+
+class TestOpenKwargsDefaults:
+    """Tests for default open kwargs (chunks, engine, decode_timedelta)."""
+
+    def test_defaults_applied_when_empty(self) -> None:
+        from point_collocation.core._open_method import _build_effective_open_kwargs
+
+        result = _build_effective_open_kwargs({})
+        assert result["chunks"] == {}
+        assert result["engine"] == "h5netcdf"
+        assert result["decode_timedelta"] is False
+
+    def test_user_overrides_respected(self) -> None:
+        from point_collocation.core._open_method import _build_effective_open_kwargs
+
+        result = _build_effective_open_kwargs({"engine": "netcdf4", "chunks": {"x": 100}})
+        assert result["engine"] == "netcdf4"
+        assert result["chunks"] == {"x": 100}
+        assert result["decode_timedelta"] is False  # default still applied
+
+    def test_decode_timedelta_can_be_overridden(self) -> None:
+        from point_collocation.core._open_method import _build_effective_open_kwargs
+
+        result = _build_effective_open_kwargs({"decode_timedelta": True})
+        assert result["decode_timedelta"] is True
+
+
+class TestCoordNormalization:
+    """Tests for _apply_coords() coordinate normalization."""
+
+    def test_auto_finds_lon_lat(self) -> None:
+        from point_collocation.core._open_method import _apply_coords
+
+        ds = xr.Dataset(coords={"lon": [0.0], "lat": [0.0], "sst": 1.0})
+        spec = {"coords": "auto", "set_coords": True}
+        ds_out, lon_name, lat_name = _apply_coords(ds, spec)
+        assert lon_name == "lon"
+        assert lat_name == "lat"
+
+    def test_explicit_coords_dict(self) -> None:
+        from point_collocation.core._open_method import _apply_coords
+
+        ds = xr.Dataset({"MyLon": ("x", [0.0]), "MyLat": ("x", [0.0]), "sst": ("x", [1.0])})
+        spec = {"coords": {"lat": "MyLat", "lon": "MyLon"}, "set_coords": True}
+        ds_out, lon_name, lat_name = _apply_coords(ds, spec)
+        assert lon_name == "MyLon"
+        assert lat_name == "MyLat"
+        # Should be promoted to coords
+        assert "MyLon" in ds_out.coords
+        assert "MyLat" in ds_out.coords
+
+    def test_explicit_coords_list(self) -> None:
+        from point_collocation.core._open_method import _apply_coords
+
+        ds = xr.Dataset({"Longitude": ("x", [0.0]), "Latitude": ("x", [0.0]), "sst": ("x", [1.0])})
+        spec = {"coords": ["Latitude", "Longitude"], "set_coords": True}
+        ds_out, lon_name, lat_name = _apply_coords(ds, spec)
+        assert lon_name == "Longitude"
+        assert lat_name == "Latitude"
+        assert "Longitude" in ds_out.coords
+        assert "Latitude" in ds_out.coords
+
+    def test_missing_coords_dict_raises(self) -> None:
+        from point_collocation.core._open_method import _apply_coords
+
+        ds = xr.Dataset({"sst": ("x", [1.0])})
+        spec = {"coords": {"lat": "NoLat", "lon": "NoLon"}, "set_coords": True}
+        with pytest.raises(ValueError, match="not found"):
+            _apply_coords(ds, spec)
+
+    def test_auto_no_geoloc_raises(self) -> None:
+        from point_collocation.core._open_method import _apply_coords
+
+        ds = xr.Dataset({"sst": ("x", [1.0])})
+        spec = {"coords": "auto", "set_coords": True}
+        with pytest.raises(ValueError, match="no geolocation variables found"):
+            _apply_coords(ds, spec)
+
+    def test_set_coords_false_does_not_promote(self) -> None:
+        from point_collocation.core._open_method import _apply_coords
+
+        ds = xr.Dataset({"lon": ("x", [0.0]), "lat": ("x", [0.0]), "sst": ("x", [1.0])})
+        spec = {"coords": "auto", "set_coords": False}
+        ds_out, lon_name, lat_name = _apply_coords(ds, spec)
+        # Variables not promoted since set_coords=False
+        assert "lon" not in ds_out.coords
+        assert "lat" not in ds_out.coords
+        assert lon_name == "lon"
+        assert lat_name == "lat"
+
+
+class TestOpenAsDatasetFastPath:
+    """Tests that open_method='dataset' uses xr.open_dataset (not datatree)."""
+
+    def test_dataset_open_method_calls_open_dataset(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_method='dataset' uses xr.open_dataset (not datatree)."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="test.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        called_open_dataset = []
+        original_open_dataset = xr.open_dataset
+
+        def mock_open_dataset(f, **kwargs):
+            called_open_dataset.append(f)
+            return original_open_dataset(f, **kwargs)
+
+        monkeypatch.setattr(xr, "open_dataset", mock_open_dataset)
+
+        # Should not fail, and open_dataset must be called
+        pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        assert len(called_open_dataset) >= 1
+
+    def test_auto_open_method_succeeds_for_standard_file(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_method='auto' succeeds for standard files with lat/lon coords."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="test.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p, open_method="auto", variables=["sst"], open_dataset_kwargs={"engine": "netcdf4"}
+        )
+        assert not result["sst"].isna().all()
+
+
+class TestProfiles:
+    """Tests for the profiles module."""
+
+    def test_pace_l3_profile_importable(self) -> None:
+        from point_collocation.profiles import pace_l3
+
+        assert isinstance(pace_l3, dict)
+        assert pace_l3["xarray_open"] == "dataset"
+
+    def test_pace_l2_profile_importable(self) -> None:
+        from point_collocation.profiles import pace_l2
+
+        assert isinstance(pace_l2, dict)
+        assert pace_l2["xarray_open"] == "datatree"
+        assert pace_l2["merge"] == "all"
+
+    def test_pace_l3_normalizes_correctly(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+        from point_collocation.profiles import pace_l3
+
+        spec = _normalize_open_method(pace_l3)
+        assert spec["xarray_open"] == "dataset"
+        assert spec["coords"] == "auto"
+        assert spec["set_coords"] is True
+
+    def test_pace_l2_normalizes_correctly(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+        from point_collocation.profiles import pace_l2
+
+        spec = _normalize_open_method(pace_l2)
+        assert spec["xarray_open"] == "datatree"
+        assert spec["merge"] == "all"
+        assert spec["coords"] == "auto"
+
+    def test_pace_l3_can_be_used_in_matchup(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pace_l3 profile can be passed directly to pc.matchup()."""
+        from point_collocation.profiles import pace_l3
+
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="test.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            open_method=pace_l3,
+            variables=["sst"],
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+        assert not result["sst"].isna().all()
+
+
+class TestAutoAlignPhonyDims:
+    """Tests for _safe_align_phony_dims()."""
+
+    def test_aligns_two_datasets_with_matching_phony_dims(self) -> None:
+        from point_collocation.core._open_method import _safe_align_phony_dims
+
+        ds1 = xr.Dataset({"a": (["phony_dim_0", "phony_dim_1"], [[1.0, 2.0]])})
+        ds2 = xr.Dataset({"b": (["phony_dim_2", "phony_dim_3"], [[3.0, 4.0]])})
+
+        result = _safe_align_phony_dims([ds1, ds2])
+        # Both should have been renamed to ("y", "x")
+        assert "y" in result[0].dims
+        assert "x" in result[0].dims
+        assert "y" in result[1].dims
+        assert "x" in result[1].dims
+
+    def test_no_change_when_no_phony_dims(self) -> None:
+        from point_collocation.core._open_method import _safe_align_phony_dims
+
+        ds1 = xr.Dataset({"a": (["y", "x"], [[1.0, 2.0]])})
+        ds2 = xr.Dataset({"b": (["y", "x"], [[3.0, 4.0]])})
+
+        result = _safe_align_phony_dims([ds1, ds2])
+        assert "y" in result[0].dims
+        assert "x" in result[0].dims
