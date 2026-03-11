@@ -4,8 +4,8 @@ Responsibilities
 ----------------
 * Accept a :class:`~point_collocation.core.plan.Plan` object built with
   :func:`~point_collocation.plan`.
-* Open each granule individually with ``xarray.open_dataset`` (never
-  ``open_mfdataset``) to minimise cloud I/O and avoid memory leaks.
+* Open each granule individually (never ``open_mfdataset``) to minimise
+  cloud I/O and avoid memory leaks.
 * Extract the requested variables at each point's location/time using
   nearest-neighbour selection (gridded) or xoak k-d tree (swath).
 * Collect results into a ``pandas.DataFrame`` with one row per
@@ -27,28 +27,31 @@ import gc
 import os
 import pathlib
 import time
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generator
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+from point_collocation.core._open_method import (
+    _apply_coords,
+    _build_effective_open_kwargs,
+    _cf_geoloc_names,
+    _ensure_coords,
+    _find_geoloc_pair,
+    _merge_datatree_with_spec,
+    _normalize_open_method,
+    _open_as_flat_dataset,
+    _open_datatree_fn,
+    _resolve_auto_spec,
+)
+
 if TYPE_CHECKING:
     from point_collocation.core.plan import Plan
 
-# Geolocation name pairs used as a fallback when cf_xarray is not installed or
-# when the dataset lacks CF-convention attributes (standard_name, units, etc.).
-# Each element is (lon_name, lat_name), tried in order (case-sensitive).
-_GEOLOC_PAIRS = [
-    ("lon", "lat"),
-    ("longitude", "latitude"),
-    ("Longitude", "Latitude"),
-    ("LONGITUDE", "LATITUDE"),
-]
+# Re-export geolocation pairs for callers that import them from this module.
+from point_collocation.core._open_method import _GEOLOC_PAIRS  # noqa: F401
 
-_VALID_GEOMETRIES = {"grid", "swath"}
-_VALID_OPEN_METHODS = {"dataset", "datatree-merge"}
 _VALID_SPATIAL_METHODS = {"nearest", "xoak"}
 
 # Time dimension names used as a fallback when cf_xarray is not installed or
@@ -59,9 +62,8 @@ _TIME_DIM_NAMES = ["time", "Time", "TIME"]
 def matchup(
     plan: "Plan",
     *,
-    geometry: str,
+    open_method: str | dict | None = None,
     variables: list[str] | None = None,
-    open_method: str | None = None,
     spatial_method: str | None = None,
     open_dataset_kwargs: dict | None = None,
     silent: bool = True,
@@ -79,10 +81,39 @@ def matchup(
         search parameters are taken from the plan.  One output row is
         produced per (point, granule) pair; points with zero matching
         granules produce a single NaN row.
-    geometry:
-        Data geometry type.  Must be ``"grid"`` (L3/gridded, 1-D lat/lon
-        coordinates) or ``"swath"`` (L2/swath, 2-D lat/lon arrays).
-        This is a required argument — no default is provided.
+    open_method:
+        How granules are opened.  Accepts a string preset or a dict spec.
+
+        **String presets:**
+
+        * ``"dataset"`` — open with ``xarray.open_dataset`` (fast path for
+          typical flat NetCDF files).
+        * ``"datatree-merge"`` — open as DataTree and merge all groups into
+          a flat Dataset (for grouped/HDF5-ish files).
+        * ``"auto"`` *(default)* — try the fast ``"dataset"`` path first; if
+          lat/lon coordinates cannot be detected, fall back to
+          ``"datatree-merge"`` automatically.
+
+        **Dict spec** (advanced):
+
+        .. code-block:: python
+
+            open_method = {
+                "xarray_open":           "dataset" | "datatree",
+                "open_kwargs":           {},
+                "merge":                 "all" | "root" | ["/path/a"],
+                "merge_kwargs":          {},
+                "coords":                "auto" | ["Lat", "Lon"] | {"lat": "...", "lon": "..."},
+                "set_coords":            True,
+                "dim_renames":           None | {"node": {"old": "new"}},
+                "auto_align_phony_dims": None | "safe",
+            }
+
+        All keys are optional; missing keys receive sensible defaults.
+        Unknown keys raise :exc:`ValueError`.
+
+        Pre-defined profiles for common products are importable from
+        :mod:`point_collocation.profiles` (e.g. ``pace_l3``, ``pace_l2``).
     variables:
         Variable names to extract from each granule.  When provided,
         overrides any variables stored on the plan.  When omitted,
@@ -90,25 +121,19 @@ def matchup(
         empty, the output will have no variable columns.
         Raises :exc:`ValueError` if a requested variable is not found
         in the opened dataset.
-    open_method:
-        How granules are opened.  ``"dataset"`` opens each granule with
-        ``xarray.open_dataset``; ``"datatree-merge"`` opens with
-        DataTree and merges groups into a flat dataset.  Defaults to
-        ``"dataset"`` when ``geometry="grid"`` and ``"datatree-merge"``
-        when ``geometry="swath"``.
     spatial_method:
         Method used for spatial matching.  ``"nearest"`` uses
         ``ds.sel(..., method="nearest")`` and requires 1-D coordinates
         (gridded data).  ``"xoak"`` uses the ``xoak`` package for
         nearest-neighbour matching on 2-D (irregular/swath) grids.
-        Defaults to ``"nearest"`` when ``geometry="grid"`` and
-        ``"xoak"`` when ``geometry="swath"``.
+        Defaults to ``"nearest"``.
     open_dataset_kwargs:
-        Optional dictionary of keyword arguments forwarded to
-        ``xarray.open_dataset`` for every granule opened during the run.
-        ``chunks`` defaults to ``{}`` (lazy/dask loading) unless
-        explicitly overridden.  ``engine`` defaults to ``"h5netcdf"``
-        when no ``engine`` key is present in the dict.
+        Optional dictionary of keyword arguments forwarded to the xarray
+        open function for every granule opened during the run.  These
+        override any ``"open_kwargs"`` in *open_method* but are themselves
+        overridden by their respective defaults only for missing keys
+        (``chunks`` → ``{}``, ``engine`` → ``"h5netcdf"``,
+        ``decode_timedelta`` → ``False``).
     silent:
         When ``True`` (default), all progress output is suppressed.
         Set to ``False`` to print a progress message to stdout after
@@ -167,13 +192,12 @@ def matchup(
     Raises
     ------
     ValueError
-        If ``geometry`` is not ``"grid"`` or ``"swath"``.
+        If *open_method* is a string that is not a valid preset, or a dict
+        with unknown keys or an invalid ``"xarray_open"`` value.
     ValueError
         If a requested variable is not present in an opened dataset.
     ValueError
         If geolocation variables cannot be detected unambiguously.
-    ValueError
-        If the geolocation array dimensionality does not match *geometry*.
     ValueError
         If ``granule_range`` is not a 2-tuple of positive integers with
         ``start <= end``, or if either bound exceeds the number of matched
@@ -182,12 +206,6 @@ def matchup(
         If ``spatial_method="xoak"`` and the ``xoak`` package is not
         installed.
     """
-    if geometry not in _VALID_GEOMETRIES:
-        raise ValueError(
-            f"geometry={geometry!r} is not valid. "
-            f"Must be one of {sorted(_VALID_GEOMETRIES)}."
-        )
-
     if granule_range is not None:
         if (
             len(granule_range) != 2
@@ -202,17 +220,9 @@ def matchup(
                 "both 1-based and inclusive (e.g. granule_range=(261, 620))."
             )
 
-    # Apply geometry-based defaults.
-    if open_method is None:
-        open_method = "dataset" if geometry == "grid" else "datatree-merge"
     if spatial_method is None:
-        spatial_method = "nearest" if geometry == "grid" else "xoak"
+        spatial_method = "nearest"
 
-    if open_method not in _VALID_OPEN_METHODS:
-        raise ValueError(
-            f"open_method={open_method!r} is not valid. "
-            f"Must be one of {sorted(_VALID_OPEN_METHODS)}."
-        )
     if spatial_method not in _VALID_SPATIAL_METHODS:
         raise ValueError(
             f"spatial_method={spatial_method!r} is not valid. "
@@ -229,130 +239,31 @@ def matchup(
                 "Install them with: pip install xoak scikit-learn"
             ) from exc
 
+    # Normalize open_method to a full dict spec (raises ValueError on invalid input).
+    effective_open_method = "auto" if open_method is None else open_method
+    spec = _normalize_open_method(effective_open_method, open_dataset_kwargs)
+
     effective_vars: list[str] = variables if variables is not None else plan.variables
-    effective_kwargs = {"chunks": {}, **(open_dataset_kwargs or {})}
     return _execute_plan(
         plan,
-        geometry=geometry,
-        open_method=open_method,
+        spec=spec,
         spatial_method=spatial_method,
         variables=effective_vars,
         silent=silent,
         batch_size=batch_size,
         save_dir=save_dir,
         granule_range=granule_range,
-        **effective_kwargs,
     )
+
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-
-def _cf_geoloc_names(ds: xr.Dataset, key: str) -> list[str]:
-    """Return variable names that match a CF *key* (e.g. ``"longitude"``) in *ds*.
-
-    Searches both ``ds.coords`` and ``ds.data_vars`` via the ``cf_xarray``
-    accessor.  Returns an empty list when ``cf_xarray`` is not installed or
-    when no variables match the key.
-
-    Parameters
-    ----------
-    ds:
-        Dataset to inspect.
-    key:
-        CF coordinate key, e.g. ``"longitude"`` or ``"latitude"``.
-    """
-    try:
-        import cf_xarray  # noqa: F401  (registers the .cf accessor)
-    except ImportError:
-        return []
-
-    try:
-        matched = ds.cf[[key]]
-    except KeyError:
-        return []
-
-    return list(matched.coords) + list(matched.data_vars)
-
-
-def _find_geoloc_pair(ds: xr.Dataset) -> tuple[str, str]:
-    """Find exactly one ``(lon_name, lat_name)`` pair in *ds*.
-
-    Detection strategy
-    ------------------
-    1. **cf_xarray** (primary, if installed): inspects CF-convention attributes
-       such as ``standard_name``, ``units``, and ``long_name`` in both
-       ``ds.coords`` and ``ds.data_vars``.
-    2. **Name-based fallback**: if ``cf_xarray`` is not installed or the
-       dataset lacks CF attributes, searches ``ds.coords`` and ``ds.data_vars``
-       for each ``(lon_name, lat_name)`` pair in :data:`_GEOLOC_PAIRS`.
-
-    Returns
-    -------
-    tuple[str, str]
-        ``(lon_name, lat_name)`` of the single detected pair.
-
-    Raises
-    ------
-    ValueError
-        If zero pairs are found ("no geolocation variables found") or
-        more than one pair is found ("ambiguous geolocation variables").
-    """
-    # --- primary: cf_xarray (CF-conventions-aware) ---
-    lon_names = _cf_geoloc_names(ds, "longitude")
-    lat_names = _cf_geoloc_names(ds, "latitude")
-
-    if lon_names or lat_names:
-        # cf_xarray found at least one candidate — commit to its results.
-        if not lon_names or not lat_names:
-            raise ValueError(
-                "no geolocation variables found. "
-                f"cf_xarray detected longitude={lon_names}, latitude={lat_names}; "
-                "expected exactly one variable for each."
-            )
-        if len(lon_names) > 1 or len(lat_names) > 1:
-            raise ValueError(
-                f"ambiguous geolocation variables; "
-                f"cf_xarray detected longitude={lon_names}, latitude={lat_names}. "
-                "Rename or drop the extra coordinates before running matchup."
-            )
-        return lon_names[0], lat_names[0]
-
-    # --- fallback: name-based search (no cf_xarray or no CF attributes) ---
-    found: list[tuple[str, str]] = []
-    for lon_name, lat_name in _GEOLOC_PAIRS:
-        has_lon = lon_name in ds.coords or lon_name in ds.data_vars
-        has_lat = lat_name in ds.coords or lat_name in ds.data_vars
-        if has_lon and has_lat:
-            found.append((lon_name, lat_name))
-
-    if len(found) == 0:
-        raise ValueError(
-            "no geolocation variables found. "
-            "Expected one of the following (lon, lat) name pairs in ds.coords "
-            f"or ds.data_vars: {_GEOLOC_PAIRS}"
-        )
-    if len(found) > 1:
-        raise ValueError(
-            f"ambiguous geolocation variables; detected pairs: {found}. "
-            "The dataset contains more than one recognised (lon, lat) pair. "
-            "Rename or drop the extra coordinates before running matchup."
-        )
-    return found[0]
-
-
-def _ensure_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> xr.Dataset:
-    """Promote *lon_name* and *lat_name* to coordinates if they are data variables."""
-    to_promote = [
-        name
-        for name in (lon_name, lat_name)
-        if name in ds.data_vars and name not in ds.coords
-    ]
-    if to_promote:
-        ds = ds.set_coords(to_promote)
-    return ds
+# Time dimension names used as a fallback when cf_xarray is not installed or
+# when the dataset lacks CF-convention axis/units attributes.  Tried in order.
+_TIME_DIM_NAMES = ["time", "Time", "TIME"]
 
 
 def _find_time_dim(ds: xr.Dataset) -> str | None:
@@ -445,124 +356,36 @@ def _select_time(
         return da.isel({time_dim: 0})
 
 
-def _check_geometry(
+def _check_spatial_compat(
     ds: xr.Dataset,
     lon_name: str,
     lat_name: str,
-    geometry: str,
+    spatial_method: str,
 ) -> None:
-    """Raise if the dimensionality of lat/lon does not match *geometry*.
+    """Raise if lat/lon dimensionality is incompatible with *spatial_method*.
+
+    Only validates for ``spatial_method="nearest"``, which requires 1-D
+    coordinate arrays.  ``spatial_method="xoak"`` works with both 1-D and
+    2-D arrays and is not validated here.
 
     Uses only metadata (``dims``) — does **not** load array data.
     """
-    # Access the variable through coords or data_vars (prefer coords after promote step).
+    if spatial_method != "nearest":
+        return
+
     lon_var = ds.coords[lon_name] if lon_name in ds.coords else ds[lon_name]
     lat_var = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
 
     lon_ndim = len(lon_var.dims)
     lat_ndim = len(lat_var.dims)
 
-    if geometry == "grid" and (lon_ndim != 1 or lat_ndim != 1):
+    if lon_ndim != 1 or lat_ndim != 1:
         raise ValueError(
-            f"geometry='grid' requires 1-D geolocation arrays, but found "
+            f"spatial_method='nearest' requires 1-D geolocation arrays, but found "
             f"{lon_name!r} with dims={tuple(lon_var.dims)} and "
             f"{lat_name!r} with dims={tuple(lat_var.dims)}. "
-            "Try geometry='swath'."
+            "Try spatial_method='xoak'."
         )
-    if geometry == "swath" and (lon_ndim != 2 or lat_ndim != 2):
-        raise ValueError(
-            f"geometry='swath' requires 2-D geolocation arrays, but found "
-            f"{lon_name!r} with dims={tuple(lon_var.dims)} and "
-            f"{lat_name!r} with dims={tuple(lat_var.dims)}. "
-            "Try geometry='grid'."
-        )
-
-
-@contextmanager
-def _open_as_flat_dataset(
-    file_obj: object,
-    open_method: str,
-    kwargs: dict,
-) -> Generator["xr.Dataset", None, None]:
-    """Context manager that opens *file_obj* and yields a flat :class:`xarray.Dataset`.
-
-    For ``open_method="dataset"``, wraps ``xr.open_dataset``.
-    For ``open_method="datatree-merge"``, opens as a DataTree (using
-    ``xarray.open_datatree`` if available, or the ``datatree`` package),
-    merges all leaves into a single Dataset, and explicitly closes the
-    DataTree on exit so that all underlying file handles are released
-    promptly — without relying on Python's cyclic garbage collector.
-    """
-    if open_method == "dataset":
-        ds_kwargs = dict(kwargs)
-        ds_kwargs.setdefault("decode_timedelta", False)
-        with xr.open_dataset(file_obj, **ds_kwargs) as ds:  # type: ignore[arg-type]
-            yield ds
-        return
-
-    # datatree-merge: open as DataTree, merge groups, close the tree on exit.
-    dt = _open_datatree(file_obj, kwargs)
-    try:
-        ds = _merge_datatree(dt)
-        yield ds
-    finally:
-        # Explicitly close the DataTree to release all underlying file handles.
-        # Without this the DataTree (which typically contains parent→child cycles)
-        # is not freed until Python's cyclic GC runs, causing the dataset's
-        # memory (~200 MB per swath granule) to accumulate across granules.
-        dt.close()
-
-
-def _open_datatree(file_obj: object, kwargs: dict) -> object:
-    """Open *file_obj* as a DataTree using whichever API is available."""
-    # Suppress xarray FutureWarning about timedelta decoding by opting into
-    # the future behaviour (do not decode timedelta-like variables by default).
-    dt_kwargs = dict(kwargs)
-    dt_kwargs.setdefault("decode_timedelta", False)
-
-    # Try xarray built-in DataTree (xarray >= 2024.x).
-    try:
-        open_dt = xr.open_datatree  # type: ignore[attr-defined]
-        return open_dt(file_obj, **dt_kwargs)  # type: ignore[arg-type]
-    except AttributeError:
-        pass
-
-    # Fall back to the standalone datatree package.
-    try:
-        import datatree  # type: ignore[import-untyped]
-
-        return datatree.open_datatree(file_obj, **dt_kwargs)  # type: ignore[arg-type]
-    except ImportError as exc:
-        raise ImportError(
-            "open_method='datatree-merge' requires either xarray >= 2024.x (with "
-            "built-in DataTree support) or the 'datatree' package. "
-            "Install it with: pip install datatree"
-        ) from exc
-
-
-def _merge_datatree(dt: object) -> xr.Dataset:
-    """Merge all leaf datasets in *dt* into a single flat Dataset."""
-    # Both xarray.DataTree and datatree.DataTree expose .subtree or .items()
-    # for iteration over nodes.  We collect all datasets and merge them.
-    datasets: list[xr.Dataset] = []
-
-    try:
-        # xarray DataTree API (>= 2024.x).
-        for node in dt.subtree:  # type: ignore[union-attr]
-            if node.ds is not None and len(node.ds.data_vars) > 0:
-                datasets.append(node.ds)
-    except AttributeError:
-        # datatree package API.
-        for _path, node in dt.items():  # type: ignore[union-attr]
-            ds = node.ds
-            if ds is not None and len(ds.data_vars) > 0:
-                datasets.append(ds)
-
-    if not datasets:
-        return xr.Dataset()
-
-    merged = xr.merge(datasets, compat="override", join="outer")
-    return merged
 
 
 def _safe_close(file_obj: object) -> None:
@@ -584,15 +407,13 @@ def _safe_close(file_obj: object) -> None:
 def _execute_plan(
     plan: "Plan",
     *,
-    geometry: str,
-    open_method: str,
+    spec: dict,
     spatial_method: str,
     variables: list[str],
     silent: bool = True,
     batch_size: int | None = None,
     save_dir: str | os.PathLike | None = None,
     granule_range: tuple[int, int] | None = None,
-    **open_dataset_kwargs: object,
 ) -> pd.DataFrame:
     """Execute a :class:`~point_collocation.core.plan.Plan`.
 
@@ -615,11 +436,6 @@ def _execute_plan(
     # that handles from previous batches can be released by the OS, keeping
     # peak memory proportional to batch_size rather than the total number of
     # granules.
-
-    kwargs = dict(open_dataset_kwargs)
-    if "engine" not in kwargs:
-        kwargs["engine"] = "h5netcdf"
-    kwargs.setdefault("decode_timedelta", False)
 
     # Prepare save directory if requested.
     save_path: pathlib.Path | None = None
@@ -659,8 +475,13 @@ def _execute_plan(
             row[var] = float("nan")
         output_rows.append(row)
 
-    # Track whether we have already validated geometry on the first granule.
-    geometry_checked = False
+    # Track whether we have already validated spatial compat on the first granule.
+    spatial_checked = False
+
+    # For "auto" open_method, probe only the first granule to determine whether
+    # to use the "dataset" or "datatree" path, then reuse that resolved spec for
+    # all subsequent granules (avoids redundant probing and ensures consistency).
+    auto_spec_resolved = spec.get("xarray_open") != "auto"
 
     sorted_granule_items = sorted(granule_to_points.items())
     # Total matched granules in the full plan — used in progress messages so
@@ -722,15 +543,19 @@ def _execute_plan(
             opened_batch[batch_pos] = None
 
             try:
-                try:
-                    with _open_as_flat_dataset(file_obj, open_method, kwargs) as ds:  # type: ignore[arg-type]
-                        lon_name, lat_name = _find_geoloc_pair(ds)
-                        ds = _ensure_coords(ds, lon_name, lat_name)
+                # For "auto" mode: probe the first file to determine whether to
+                # use the dataset or datatree path, then lock in the resolved
+                # spec for all remaining granules.
+                if not auto_spec_resolved:
+                    spec = _resolve_auto_spec(file_obj, spec)  # type: ignore[arg-type]
+                    auto_spec_resolved = True
 
-                        # Validate geometry against actual array dims — once only.
-                        if not geometry_checked:
-                            _check_geometry(ds, lon_name, lat_name, geometry)
-                            geometry_checked = True
+                try:
+                    with _open_as_flat_dataset(file_obj, spec) as (ds, lon_name, lat_name):  # type: ignore[arg-type]
+                        # Validate spatial method compatibility — once only.
+                        if not spatial_checked:
+                            _check_spatial_compat(ds, lon_name, lat_name, spatial_method)
+                            spatial_checked = True
 
                         # Validate that all requested variables exist in the dataset.
                         missing_vars = [v for v in variables if v not in ds]
@@ -739,20 +564,23 @@ def _execute_plan(
                             raise ValueError(
                                 f"Variable(s) {missing_vars!r} not found in granule "
                                 f"'{gm.granule_id}'. "
-                                f"geometry={geometry!r}, open_method={open_method!r}, "
+                                f"open_method={spec['xarray_open']!r}, "
                                 f"spatial_method={spatial_method!r}. "
                                 f"Available variables: {avail}. "
                                 "Use plan.show_variables() to inspect the dataset."
                             )
 
-                        # For grid+xoak, pre-slice the dataset to the spatial extent
-                        # of the query points before building the k-d tree.  A global
-                        # granule with only a few scattered points would otherwise cause
-                        # xoak to index the entire global grid, which is very slow.
-                        if spatial_method == "xoak" and geometry == "grid":
-                            pt_lats = [float(plan.points.loc[idx]["lat"]) for idx in pt_indices]
-                            pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
-                            ds = _slice_grid_to_points(ds, pt_lats, pt_lons, lat_name, lon_name)
+                        # For xoak with 1-D (gridded) lat/lon, pre-slice the dataset
+                        # to the spatial extent of the query points before building
+                        # the k-d tree.  A global granule with only a few scattered
+                        # points would otherwise cause xoak to index the entire global
+                        # grid, which is very slow.
+                        if spatial_method == "xoak":
+                            lat_var = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
+                            if lat_var.ndim == 1:
+                                pt_lats = [float(plan.points.loc[idx]["lat"]) for idx in pt_indices]
+                                pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
+                                ds = _slice_grid_to_points(ds, pt_lats, pt_lons, lat_name, lon_name)
 
                         # Compute granule_time from the granule metadata.  Earthaccess
                         # granules store their temporal coverage in GranuleMeta.begin/end;
@@ -827,6 +655,7 @@ def _execute_plan(
                 # regardless of batch_size and open_method.
                 gc.collect()
 
+
             granules_processed += 1
 
         # End of batch: report progress and save intermediate results.
@@ -889,7 +718,7 @@ def _slice_grid_to_points(
 ) -> xr.Dataset:
     """Slice a regular-grid dataset to the smallest region covering *lats*/*lons*.
 
-    When ``geometry='grid'`` and ``spatial_method='xoak'``, building a k-d tree
+    When ``spatial_method='xoak'`` and lat/lon are 1-D (regular grid), building a k-d tree
     over an entire global granule is very slow if only a few points need to be
     matched.  This function slices the dataset to a padded bounding box around
     the query points so xoak indexes the minimum required region.

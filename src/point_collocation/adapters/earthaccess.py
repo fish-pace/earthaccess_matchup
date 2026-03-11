@@ -19,7 +19,7 @@ Usage
             "granule_name": "*.DAY.*.4km.*",
         },
     )
-    out = pc.matchup(plan, geometry="grid", variables=["Rrs"])
+    out = pc.matchup(plan, variables=["Rrs"])
 
 Responsibilities
 ----------------
