@@ -593,6 +593,91 @@ def _safe_align_phony_dims(datasets: list[xr.Dataset]) -> list[xr.Dataset]:
 
 
 # ---------------------------------------------------------------------------
+# Auto-mode resolution helper
+# ---------------------------------------------------------------------------
+
+
+def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
+    """Probe *file_obj* to resolve an ``"auto"`` spec to ``"dataset"`` or ``"datatree"``.
+
+    Attempts the fast ``xr.open_dataset`` path first; if lat/lon can be
+    identified, returns a copy of *spec* with ``"xarray_open"`` set to
+    ``"dataset"``.  On failure, falls back to the DataTree merge path and
+    returns a spec with ``"xarray_open"`` set to ``"datatree"``.
+
+    *file_obj* is seeked back to position 0 after each probe attempt so that
+    the caller can re-open it for actual data extraction.
+
+    Parameters
+    ----------
+    file_obj:
+        File path or seekable file-like object.
+    spec:
+        Normalized spec with ``"xarray_open": "auto"``.
+
+    Returns
+    -------
+    dict
+        Resolved spec with ``"xarray_open"`` set to ``"dataset"`` or
+        ``"datatree"``.
+
+    Raises
+    ------
+    ValueError
+        If neither the dataset nor the DataTree path succeeds.
+    """
+    effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+
+    def _seek_back() -> None:
+        if hasattr(file_obj, "seek"):
+            try:
+                file_obj.seek(0)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    # --- Try the fast dataset path ---
+    dataset_error: BaseException | None = None
+    try:
+        with xr.open_dataset(file_obj, **effective_kwargs) as ds:  # type: ignore[arg-type]
+            _apply_coords(ds, spec)
+        _seek_back()
+        return {**spec, "xarray_open": "dataset"}
+    except Exception as exc:
+        dataset_error = exc
+
+    _seek_back()
+
+    # --- Try the DataTree path ---
+    datatree_spec: dict = {
+        **spec,
+        "xarray_open": "datatree",
+        "merge": spec.get("merge", "all"),
+        "merge_kwargs": spec.get("merge_kwargs", {}),
+    }
+    datatree_error: BaseException | None = None
+    try:
+        dt = _open_datatree_fn(file_obj, effective_kwargs)
+        try:
+            ds = _merge_datatree_with_spec(dt, datatree_spec)
+            _apply_coords(ds, datatree_spec)
+        finally:
+            if hasattr(dt, "close"):
+                dt.close()
+        _seek_back()
+        return datatree_spec
+    except Exception as exc:
+        datatree_error = exc
+
+    raise ValueError(
+        "open_method='auto' failed to identify lat/lon coordinates via both "
+        "the dataset and DataTree paths.\n"
+        f"  Dataset attempt: {dataset_error!s}\n"
+        f"  DataTree attempt: {datatree_error!s}\n"
+        "Specify open_method='datatree-merge' or a dict spec with explicit coords."
+    ) from datatree_error
+
+
+# ---------------------------------------------------------------------------
 # Main context manager
 # ---------------------------------------------------------------------------
 

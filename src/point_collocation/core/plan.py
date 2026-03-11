@@ -383,6 +383,7 @@ class Plan:
             _merge_datatree_with_spec,
             _normalize_open_method,
             _open_datatree_fn,
+            _resolve_auto_spec,
         )
 
         if not self.results:
@@ -411,7 +412,24 @@ class Plan:
 
         effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
 
-        print(f"open_method  : {effective_open_method!r}")
+        # For "auto" mode, probe the first granule to resolve which open path
+        # to use (dataset vs. datatree).  This ensures that the reported
+        # open_method reflects what was actually applied and that the datatree
+        # fallback is exercised when the fast dataset path lacks geolocation.
+        # If both paths fail to detect lat/lon, fall back to the dataset path
+        # for display purposes so that dimensions/variables are still shown.
+        if xarray_open == "auto":
+            try:
+                spec = _resolve_auto_spec(file_obj, spec)
+                xarray_open = spec["xarray_open"]
+                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+            except ValueError:
+                # Neither path could identify lat/lon — use dataset path for
+                # display; the geolocation section below will print "NONE".
+                xarray_open = "dataset"
+                spec = {**spec, "xarray_open": "dataset"}
+
+        print(f"open_method  : {spec!r}")
 
         dt = None
         if xarray_open == "datatree":
@@ -436,7 +454,7 @@ class Plan:
             msg = str(exc)
             if "no geolocation variables found" in msg:
                 print(
-                    f"\nGeolocation: NONE detected with open_method={effective_open_method!r}. "
+                    f"\nGeolocation: NONE detected with open_method={spec!r}. "
                     "Try open_method='datatree-merge' or specify "
                     "open_method={'coords': {'lat': '...', 'lon': '...'}}."
                 )

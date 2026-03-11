@@ -43,6 +43,7 @@ from point_collocation.core._open_method import (
     _normalize_open_method,
     _open_as_flat_dataset,
     _open_datatree_fn,
+    _resolve_auto_spec,
 )
 
 if TYPE_CHECKING:
@@ -477,6 +478,11 @@ def _execute_plan(
     # Track whether we have already validated spatial compat on the first granule.
     spatial_checked = False
 
+    # For "auto" open_method, probe only the first granule to determine whether
+    # to use the "dataset" or "datatree" path, then reuse that resolved spec for
+    # all subsequent granules (avoids redundant probing and ensures consistency).
+    auto_spec_resolved = spec.get("xarray_open") != "auto"
+
     sorted_granule_items = sorted(granule_to_points.items())
     # Total matched granules in the full plan — used in progress messages so
     # that the "of N" counter is always relative to the whole plan, not just
@@ -537,6 +543,13 @@ def _execute_plan(
             opened_batch[batch_pos] = None
 
             try:
+                # For "auto" mode: probe the first file to determine whether to
+                # use the dataset or datatree path, then lock in the resolved
+                # spec for all remaining granules.
+                if not auto_spec_resolved:
+                    spec = _resolve_auto_spec(file_obj, spec)  # type: ignore[arg-type]
+                    auto_spec_resolved = True
+
                 try:
                     with _open_as_flat_dataset(file_obj, spec) as (ds, lon_name, lat_name):  # type: ignore[arg-type]
                         # Validate spatial method compatibility — once only.
@@ -563,7 +576,7 @@ def _execute_plan(
                         # points would otherwise cause xoak to index the entire global
                         # grid, which is very slow.
                         if spatial_method == "xoak":
-                            lat_var = ds.coords.get(lat_name) or ds[lat_name]
+                            lat_var = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
                             if lat_var.ndim == 1:
                                 pt_lats = [float(plan.points.loc[idx]["lat"]) for idx in pt_indices]
                                 pt_lons = [float(plan.points.loc[idx]["lon"]) for idx in pt_indices]
