@@ -3649,6 +3649,39 @@ class TestPlanShowVariables:
         with pytest.raises(ValueError, match="No granules"):
             p.show_variables()
 
+    def test_show_variables_auto_prints_resolved_spec_not_auto(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables() with default auto mode prints the resolved spec, not 'auto'."""
+        nc_path = str(tmp_path / "flat.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        p.show_variables()
+        captured = capsys.readouterr()
+        # Should show the resolved mode ("dataset"), not "auto"
+        assert "'xarray_open': 'dataset'" in captured.out
+        assert "'xarray_open': 'auto'" not in captured.out
+
 
 # ---------------------------------------------------------------------------
 # Task 4: matchup() variables kwarg and missing-variable error

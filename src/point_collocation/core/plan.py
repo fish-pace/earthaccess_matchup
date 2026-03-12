@@ -505,6 +505,18 @@ class Plan:
 
         effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
 
+        # For "auto" mode, probe the file first so the printed spec shows the
+        # actual resolved mode (e.g. "dataset"), not "auto".
+        if xarray_open == "auto":
+            try:
+                spec = _resolve_auto_spec(file_obj, spec)
+                xarray_open = spec["xarray_open"]
+                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+            except ValueError:
+                xarray_open = "dataset"
+                spec = {**spec, "xarray_open": "dataset", "merge": None}
+                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+
         # Print the spec summary.
         display_spec = {**spec, "open_kwargs": effective_kwargs}
         print(f"open_method: {display_spec!r}")
