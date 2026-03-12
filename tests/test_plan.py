@@ -3256,6 +3256,99 @@ class TestPlanOpenDataset:
         with pytest.raises(IndexError, match="out of range"):
             p.open_dataset(5, silent=True)
 
+    def test_open_dataset_with_datatree_preset_returns_datatree(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset(0, open_method='datatree') returns a DataTree without merging."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = p.open_dataset(0, open_method="datatree", silent=True)
+        # Should be a DataTree-like object (has groups), not a flat Dataset
+        assert hasattr(result, "groups") or hasattr(result, "subtree") or hasattr(result, "children")
+        if hasattr(result, "close"):
+            result.close()
+
+    def test_open_dataset_auto_prints_resolved_spec_not_auto(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_dataset with open_method='auto' prints the resolved spec, not 'auto'."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(0, open_method="auto", silent=False)
+        ds.close()
+        captured = capsys.readouterr()
+        # Should show the resolved mode ("dataset"), not "auto"
+        assert "'xarray_open': 'dataset'" in captured.out
+        assert "'xarray_open': 'auto'" not in captured.out
+
+    def test_open_dataset_preset_datatree_has_merge_none_in_spec(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_method='datatree' preset expands with merge=None in printed spec."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = p.open_dataset(0, open_method="datatree", silent=False)
+        if hasattr(result, "close"):
+            result.close()
+        captured = capsys.readouterr()
+        # 'datatree' preset should show xarray_open='datatree' and merge=None
+        assert "'xarray_open': 'datatree'" in captured.out
+        assert "'merge': None" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # Helper: create a grouped NetCDF4 file (HDF5 with subgroups)
@@ -5020,8 +5113,14 @@ class TestOpenMethodNormalization:
         from point_collocation.core._open_method import _normalize_open_method
 
         spec = _normalize_open_method({"xarray_open": "datatree"})
+        assert spec["merge"] is None  # default is no-merge for plain datatree
+
+    def test_dict_spec_datatree_explicit_merge_all(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method({"xarray_open": "datatree", "merge": "all"})
         assert spec["merge"] == "all"
-        assert spec["merge_kwargs"] == {}
+        assert spec["merge_kwargs"] == {}  # merge_kwargs is set when merge is not None
 
     def test_dict_spec_unknown_key_raises(self) -> None:
         from point_collocation.core._open_method import _normalize_open_method

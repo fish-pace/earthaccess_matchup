@@ -88,6 +88,7 @@ def matchup(
 
         * ``"dataset"`` — open with ``xarray.open_dataset`` (fast path for
           typical flat NetCDF files).
+        * ``"datatree"`` — open as a raw DataTree without merging groups.
         * ``"datatree-merge"`` — open as DataTree and merge all groups into
           a flat Dataset (for grouped/HDF5-ish files).
         * ``"auto"`` *(default)* — try the fast ``"dataset"`` path first; if
@@ -101,7 +102,7 @@ def matchup(
             open_method = {
                 "xarray_open":           "dataset" | "datatree",
                 "open_kwargs":           {},
-                "merge":                 "all" | "root" | ["/path/a"],
+                "merge":                 None | "all" | "root" | ["/path/a"],
                 "merge_kwargs":          {},
                 "coords":                "auto" | ["Lat", "Lon"] | {"lat": "...", "lon": "..."},
                 "set_coords":            True,

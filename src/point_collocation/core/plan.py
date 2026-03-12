@@ -192,8 +192,8 @@ class Plan:
         open_method: "str | dict | None" = None,
         *,
         silent: bool = False,
-    ) -> "xr.Dataset":
-        """Open a single granule result as an :class:`xarray.Dataset`.
+    ) -> "Any":
+        """Open a single granule result as an :class:`xarray.Dataset` or DataTree.
 
         Parameters
         ----------
@@ -206,19 +206,36 @@ class Plan:
             How to open the granule.  Accepts the same string presets or
             dict spec as :func:`~point_collocation.matchup`.  Defaults to
             ``"auto"`` (try dataset first, fall back to datatree merge).
+
+            **String presets:**
+
+            * ``"dataset"`` — open with ``xarray.open_dataset`` (flat NetCDF).
+            * ``"datatree"`` — open as a DataTree with all groups; returns the
+              raw :class:`xarray.DataTree` (or ``datatree.DataTree``) without
+              merging groups.  Equivalent to ``xarray.open_datatree(f)``.
+            * ``"datatree-merge"`` — open as DataTree and merge all groups into
+              a flat Dataset.
+            * ``"auto"`` *(default)* — probe the file first; if lat/lon can be
+              detected via ``xr.open_dataset``, use that; otherwise fall back to
+              ``"datatree-merge"``.  The printed spec shows the **resolved** mode.
+
             Pass open-function kwargs via the ``"open_kwargs"`` key of a
             dict spec, e.g.
             ``open_method={"open_kwargs": {"engine": "netcdf4"}}``.
         silent:
             When ``False`` (default), print the effective open_method spec
-            actually used (after normalization and defaults are applied).
+            actually used (after normalization and auto-resolution).
             Set to ``True`` to suppress this output.
 
         Returns
         -------
-        xarray.Dataset
-            The caller is responsible for closing the dataset when finished
-            (e.g. ``ds.close()`` or ``with plan.open_dataset(...) as ds:``).
+        xarray.Dataset or xarray.DataTree
+            A flat :class:`xarray.Dataset` for all modes except
+            ``open_method="datatree"`` (or a dict spec with
+            ``xarray_open="datatree"`` and ``merge=None``), which returns the
+            raw DataTree.
+            The caller is responsible for closing the returned object when
+            finished (e.g. ``ds.close()``).
         """
         if isinstance(result, int):
             n = len(self.results)
@@ -236,6 +253,7 @@ class Plan:
             _normalize_open_method,
             _open_and_merge_dataset_groups,
             _open_datatree_fn,
+            _resolve_auto_spec,
         )
 
         try:
@@ -254,10 +272,6 @@ class Plan:
         xarray_open = spec.get("xarray_open", "dataset")
         effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
 
-        if not silent:
-            display_spec = {**spec, "open_kwargs": effective_kwargs}
-            print(f"open_method: {display_spec!r}")
-
         file_objs = earthaccess.open([result], pqdm_kwargs={"disable": True})
         if len(file_objs) != 1:
             raise RuntimeError(
@@ -265,7 +279,28 @@ class Plan:
             )
         file_obj = file_objs[0]
 
+        # For "auto" mode, probe the file first so that the printed spec shows
+        # the actual resolved mode (e.g. "dataset" or "datatree"), not "auto".
+        if xarray_open == "auto":
+            try:
+                spec = _resolve_auto_spec(file_obj, spec)
+                xarray_open = spec["xarray_open"]
+                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+            except ValueError:
+                xarray_open = "dataset"
+                spec = {**spec, "xarray_open": "dataset", "merge": None}
+                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+
+        if not silent:
+            display_spec = {**spec, "open_kwargs": effective_kwargs}
+            print(f"open_method: {display_spec!r}")
+
         if xarray_open == "datatree":
+            merge = spec.get("merge")
+            if merge is None:
+                # Return the raw DataTree without merging — like open_datatree(f).
+                return _open_datatree_fn(file_obj, effective_kwargs)
+            # merge is "all", "root", or a list: merge groups into a flat Dataset.
             dt = _open_datatree_fn(file_obj, effective_kwargs)
             try:
                 ds = _merge_datatree_with_spec(dt, spec)
@@ -278,11 +313,7 @@ class Plan:
                 pass  # coords not found; return merged dataset as-is
             return ds
 
-        if xarray_open in ("dataset", "auto"):
-            # For the dataset and auto paths, return an open dataset whose
-            # lifecycle is managed by the caller.  Auto tries the fast path
-            # only; if the caller needs datatree fallback they should use
-            # open_method="datatree-merge" explicitly.
+        if xarray_open == "dataset":
             merge = spec.get("merge")
             if merge is not None:
                 # Dataset-based group merge: open each group and merge.

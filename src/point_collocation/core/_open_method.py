@@ -63,7 +63,7 @@ _VALID_SPEC_KEYS: frozenset[str] = frozenset(
 )
 
 _VALID_XARRAY_OPEN: frozenset[str] = frozenset({"dataset", "datatree"})
-_VALID_PRESETS: frozenset[str] = frozenset({"dataset", "datatree-merge", "auto"})
+_VALID_PRESETS: frozenset[str] = frozenset({"dataset", "datatree", "datatree-merge", "auto"})
 
 # Default open kwargs applied to both xr.open_dataset and xr.open_datatree
 # unless explicitly overridden by the user.
@@ -163,7 +163,8 @@ def _expand_preset(preset: str) -> dict:
     Parameters
     ----------
     preset:
-        One of ``"dataset"``, ``"datatree-merge"``, or ``"auto"``.
+        One of ``"dataset"``, ``"datatree"``, ``"datatree-merge"``, or
+        ``"auto"``.
 
     Returns
     -------
@@ -179,6 +180,17 @@ def _expand_preset(preset: str) -> dict:
         return {
             "xarray_open": "dataset",
             "open_kwargs": {},
+            "merge": None,
+            "coords": "auto",
+            "set_coords": True,
+            "dim_renames": None,
+            "auto_align_phony_dims": None,
+        }
+    if preset == "datatree":
+        return {
+            "xarray_open": "datatree",
+            "open_kwargs": {},
+            "merge": None,
             "coords": "auto",
             "set_coords": True,
             "dim_renames": None,
@@ -252,11 +264,13 @@ def _validate_and_fill_spec(spec: dict) -> dict:
         )
 
     if xarray_open == "datatree":
-        result.setdefault("merge", "all")
-        result.setdefault("merge_kwargs", {})
-    elif xarray_open == "dataset" and "merge" in result:
-        # Allow merge_kwargs alongside merge for the dataset path too.
-        result.setdefault("merge_kwargs", {})
+        result.setdefault("merge", None)
+        if result.get("merge") is not None:
+            result.setdefault("merge_kwargs", {})
+    elif xarray_open == "dataset":
+        result.setdefault("merge", None)
+        if result.get("merge") is not None:
+            result.setdefault("merge_kwargs", {})
 
     return result
 
