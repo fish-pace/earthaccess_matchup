@@ -2916,7 +2916,7 @@ class TestPlanOpenDataset:
             time_buffer=pd.Timedelta(0),
         )
 
-        ds = p.open_dataset(p[0], open_dataset_kwargs={"engine": "netcdf4"})
+        ds = p.open_dataset(0, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=True)
         assert isinstance(ds, xr.Dataset)
         assert "sst" in ds
         ds.close()
@@ -2954,7 +2954,7 @@ class TestPlanOpenDataset:
         fake_ds = xr.Dataset({"sst": (["lat", "lon"], [[1.0]])}, coords={"lat": [0.0], "lon": [0.0]})
         with patch("xarray.open_mfdataset", return_value=fake_ds) as mock_mfdataset:
             # Pass a list of results directly (backward-compatible path)
-            ds = p.open_mfdataset(fake_results, open_dataset_kwargs={"engine": "netcdf4"})
+            ds = p.open_mfdataset(fake_results, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=True)
 
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
@@ -3016,7 +3016,7 @@ class TestPlanOpenDataset:
 
         fake_ds = xr.Dataset({"sst": (["lat", "lon"], [[1.0]])}, coords={"lat": [0.0], "lon": [0.0]})
         with patch("xarray.open_mfdataset", return_value=fake_ds) as mock_mfdataset:
-            ds = p.open_mfdataset(subset, open_dataset_kwargs={"engine": "netcdf4"})
+            ds = p.open_mfdataset(subset, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=True)
 
         assert ds is fake_ds
         mock_ea.open.assert_called_once_with(fake_results, pqdm_kwargs={"disable": True})
@@ -3047,7 +3047,7 @@ class TestPlanOpenDataset:
             time_buffer=pd.Timedelta(0),
         )
 
-        ds = p.open_dataset(p[0], open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        ds = p.open_dataset(0, open_method={"xarray_open": "dataset", "open_kwargs": {"engine": "netcdf4"}}, silent=True)
         assert isinstance(ds, xr.Dataset)
         assert "sst" in ds
         ds.close()
@@ -3073,7 +3073,7 @@ class TestPlanOpenDataset:
         )
 
         with pytest.raises(ValueError, match="open_method"):
-            p.open_dataset(p[0], open_method="bad")
+            p.open_dataset(0, open_method="bad", silent=True)
 
     def test_open_mfdataset_with_open_method_dataset_uses_open_mfdataset(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -3106,7 +3106,7 @@ class TestPlanOpenDataset:
 
         fake_ds = xr.Dataset({"sst": (["lat", "lon"], [[1.0]])}, coords={"lat": [0.0], "lon": [0.0]})
         with patch("xarray.open_mfdataset", return_value=fake_ds) as mock_mfd:
-            ds = p.open_mfdataset(fake_results, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+            ds = p.open_mfdataset(fake_results, open_method={"xarray_open": "dataset", "open_kwargs": {"engine": "netcdf4"}}, silent=True)
 
         assert ds is fake_ds
         mock_mfd.assert_called_once_with([nc_a, nc_b], chunks={}, engine="netcdf4", decode_timedelta=False)
@@ -3139,13 +3139,215 @@ class TestPlanOpenDataset:
 
         ds = p.open_mfdataset(
             fake_results,
-            open_method="datatree-merge",
-            open_dataset_kwargs={"engine": "netcdf4"},
+            open_method={"xarray_open": "datatree", "merge": "all", "open_kwargs": {"engine": "netcdf4"}},
+            silent=True,
         )
         # Result is a Dataset with a "granule" dimension from concatenation.
         assert isinstance(ds, xr.Dataset)
         assert ds.sizes["granule"] == 2
         assert "sst" in ds
+
+    def test_open_dataset_prints_effective_spec_when_not_silent(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_dataset prints the effective open_method spec when silent=False."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(0, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=False)
+        ds.close()
+        captured = capsys.readouterr()
+        assert "open_method:" in captured.out
+        # The effective spec includes the resolved defaults (chunks, decode_timedelta)
+        assert "engine" in captured.out
+
+    def test_open_dataset_silent_suppresses_output(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_dataset prints nothing when silent=True."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(0, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=True)
+        ds.close()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_open_dataset_integer_index(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset(0) resolves the integer to plan.results[0]."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        fake_result = object()
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[fake_result],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        # Using integer index 0 should behave identically to plan[0]
+        ds = p.open_dataset(0, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=True)
+        assert isinstance(ds, xr.Dataset)
+        assert "sst" in ds
+        ds.close()
+        mock_ea.open.assert_called_once_with([fake_result], pqdm_kwargs={"disable": True})
+
+    def test_open_dataset_integer_index_out_of_range_raises(self) -> None:
+        """open_dataset raises IndexError for an out-of-range integer index."""
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(IndexError, match="out of range"):
+            p.open_dataset(5, silent=True)
+
+    def test_open_dataset_with_datatree_preset_returns_datatree(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset(0, open_method='datatree') returns a DataTree without merging."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = p.open_dataset(0, open_method="datatree", silent=True)
+        # Should be a DataTree-like object (has groups), not a flat Dataset
+        assert hasattr(result, "groups") or hasattr(result, "subtree") or hasattr(result, "children")
+        if hasattr(result, "close"):
+            result.close()
+
+    def test_open_dataset_auto_prints_resolved_spec_not_auto(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_dataset with open_method='auto' prints the resolved spec, not 'auto'."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(0, open_method="auto", silent=False)
+        ds.close()
+        captured = capsys.readouterr()
+        # Should show the resolved mode ("dataset"), not "auto"
+        assert "'xarray_open': 'dataset'" in captured.out
+        assert "'xarray_open': 'auto'" not in captured.out
+
+    def test_open_dataset_preset_datatree_has_merge_none_in_spec(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_method='datatree' preset expands with merge=None in printed spec."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = p.open_dataset(0, open_method="datatree", silent=False)
+        if hasattr(result, "close"):
+            result.close()
+        captured = capsys.readouterr()
+        # 'datatree' preset should show xarray_open='datatree' and merge=None
+        assert "'xarray_open': 'datatree'" in captured.out
+        assert "'merge': None" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -3426,7 +3628,7 @@ class TestPlanShowVariables:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(open_method={"open_kwargs": {"engine": "netcdf4"}})
         captured = capsys.readouterr()
         assert "Dimensions" in captured.out
         assert "Variables" in captured.out
@@ -3446,6 +3648,39 @@ class TestPlanShowVariables:
         )
         with pytest.raises(ValueError, match="No granules"):
             p.show_variables()
+
+    def test_show_variables_auto_prints_resolved_spec_not_auto(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables() with default auto mode prints the resolved spec, not 'auto'."""
+        nc_path = str(tmp_path / "flat.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        p.show_variables()
+        captured = capsys.readouterr()
+        # Should show the resolved mode ("dataset"), not "auto"
+        assert "'xarray_open': 'dataset'" in captured.out
+        assert "'xarray_open': 'auto'" not in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -4575,7 +4810,7 @@ class TestShowVariablesLayout:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(open_method={"open_kwargs": {"engine": "netcdf4"}})
         captured = capsys.readouterr()
         assert "Dimensions" in captured.out
         assert "Variables" in captured.out
@@ -4613,7 +4848,7 @@ class TestShowVariablesLayout:
             time_buffer=pd.Timedelta(0),
         )
 
-        p.show_variables(open_dataset_kwargs={"engine": "netcdf4"})
+        p.show_variables(open_method={"open_kwargs": {"engine": "netcdf4"}})
         captured = capsys.readouterr()
         assert "NONE" in captured.out or "no geolocation" in captured.out.lower()
 
@@ -4911,8 +5146,14 @@ class TestOpenMethodNormalization:
         from point_collocation.core._open_method import _normalize_open_method
 
         spec = _normalize_open_method({"xarray_open": "datatree"})
+        assert spec["merge"] is None  # default is no-merge for plain datatree
+
+    def test_dict_spec_datatree_explicit_merge_all(self) -> None:
+        from point_collocation.core._open_method import _normalize_open_method
+
+        spec = _normalize_open_method({"xarray_open": "datatree", "merge": "all"})
         assert spec["merge"] == "all"
-        assert spec["merge_kwargs"] == {}
+        assert spec["merge_kwargs"] == {}  # merge_kwargs is set when merge is not None
 
     def test_dict_spec_unknown_key_raises(self) -> None:
         from point_collocation.core._open_method import _normalize_open_method
