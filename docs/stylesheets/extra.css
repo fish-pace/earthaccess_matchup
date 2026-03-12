@@ -1,0 +1,67 @@
+/* -----------------------------------------------------------------------
+   Table styling — applied to pandas DataFrame HTML tables produced by
+   nbconvert.  These tables carry class="dataframe" and a border="1"
+   attribute; the rules below replace the plain black-border look with a
+   clean, Bootstrap-inspired style that respects the Material theme palette.
+   ----------------------------------------------------------------------- */
+
+/* Container: enable horizontal scrolling on small screens */
+.md-content .dataframe-wrapper {
+  overflow-x: auto;
+  margin: 1em 0;
+}
+
+/* Core table reset */
+.md-content table.dataframe {
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: auto;
+  max-width: 100%;
+  margin: 1em 0;
+  font-size: 0.85em;
+  line-height: 1.4;
+  /* Suppress the HTML border="1" attribute */
+  border: none;
+}
+
+/* Column header row */
+.md-content table.dataframe thead tr {
+  background-color: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+  border-bottom: 2px solid var(--md-primary-fg-color--dark, var(--md-primary-fg-color));
+}
+
+.md-content table.dataframe thead th {
+  padding: 0.55em 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+  /* Override the pandas inline scoped-style that right-aligns headers */
+  text-align: left !important;
+  border: none !important;
+}
+
+/* Body cells */
+.md-content table.dataframe tbody td,
+.md-content table.dataframe tbody th {
+  padding: 0.4em 0.85em;
+  border: none !important;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest) !important;
+  vertical-align: top;
+}
+
+/* Zebra striping for readability */
+.md-content table.dataframe tbody tr:nth-child(even) {
+  background-color: var(--md-code-bg-color);
+}
+
+/* Subtle hover highlight (fallback for browsers without color-mix support) */
+.md-content table.dataframe tbody tr:hover {
+  background-color: rgba(0, 120, 212, 0.08);
+  background-color: color-mix(in srgb, var(--md-accent-fg-color) 8%, transparent);
+}
+
+/* Bottom border on the last row */
+.md-content table.dataframe tbody tr:last-child td,
+.md-content table.dataframe tbody tr:last-child th {
+  border-bottom: 2px solid var(--md-primary-fg-color) !important;
+}
