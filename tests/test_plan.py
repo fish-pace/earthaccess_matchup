@@ -3504,12 +3504,12 @@ class TestDatasetMerge:
 
 
 # ---------------------------------------------------------------------------
-# Tests for show_variables with h5py fast path (Task 3)
+# Tests for show_variables (xarray path)
 # ---------------------------------------------------------------------------
 
 
-class TestShowVariablesH5py:
-    """Tests for show_variables() using h5py fast path."""
+class TestShowVariables:
+    """Tests for show_variables() using the xarray path (no h5py)."""
 
     def _make_plan(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, nc_path: str) -> Plan:
         mock_ea = MagicMock()
@@ -3559,23 +3559,46 @@ class TestShowVariablesH5py:
         assert "lon" in captured.out
         assert "Dataset Detail" not in captured.out
 
-    def test_show_variables_grouped_file_prints_groups_and_sst(
+    def test_show_variables_open_method_includes_merge_key(
         self,
         tmp_path: pathlib.Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """show_variables() with grouped HDF5 prints group info and sst variable."""
+        """open_method line always includes 'merge' key, even when it is None."""
+        nc_path = str(tmp_path / "flat.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        p = self._make_plan(tmp_path, monkeypatch, nc_path)
+        p.show_variables()
+        captured = capsys.readouterr()
+        first_line = captured.out.splitlines()[0]
+        assert first_line.startswith("open_method:")
+        assert "'merge'" in first_line
+
+    def test_show_variables_grouped_file_auto_mode_shows_root_group(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables() with grouped HDF5 in auto mode shows root group (no Group blocks).
+
+        In auto mode xarray opens only the root group, so subgroup variables
+        such as 'sst' are not listed. Users should pass
+        open_method='datatree-merge' to inspect all groups.
+        """
         nc_path = str(tmp_path / "grouped.nc")
         _make_grouped_nc(nc_path)
         p = self._make_plan(tmp_path, monkeypatch, nc_path)
         p.show_variables()
         captured = capsys.readouterr()
-        assert "Group /" in captured.out
-        assert "sst" in captured.out
+        # Per-group blocks are not printed
+        assert "Group /" not in captured.out
+        # Root group geolocation and summary lines are present
         assert "Geolocation" in captured.out
         assert "lon" in captured.out
-        # The flat merged summary should also be present
         assert "Dimensions:" in captured.out
         assert "Variables:" in captured.out
         # Dataset Detail section should NOT appear
