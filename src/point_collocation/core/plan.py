@@ -629,6 +629,13 @@ def plan(
         ``date`` as an alias).  If the column is named ``date`` and
         contains date-only values, the time-of-day is set to noon
         (12:00 UTC) for matching purposes.
+
+        An optional ``pc_id`` column may be included to supply custom
+        point identifiers.  If present, these values must be unique;
+        duplicate ``pc_id`` values raise a :class:`ValueError`.  Any
+        additional columns beyond ``lat``, ``lon``, ``time``, and
+        ``pc_id`` are preserved and included in the output returned by
+        :func:`~point_collocation.matchup`.
     data_source:
         Data source to search.  Currently only ``"earthaccess"`` is
         supported.
@@ -654,8 +661,9 @@ def plan(
     ------
     ValueError
         If *points* is missing required columns, *data_source* is not
-        recognised, or ``source_kwargs`` does not contain at least one of
-        ``"short_name"``, ``"concept_id"``, or ``"doi"``.
+        recognised, ``source_kwargs`` does not contain at least one of
+        ``"short_name"``, ``"concept_id"``, or ``"doi"``, or the
+        ``pc_id`` column contains duplicate values.
     ImportError
         If the ``earthaccess`` package is not installed.
     """
@@ -713,12 +721,23 @@ def _plan_normalise_time(points: PointsFrame) -> PointsFrame:
 
 
 def _plan_validate_points(points: PointsFrame) -> None:
-    """Raise ``ValueError`` if *points* is missing required columns."""
+    """Raise ``ValueError`` if *points* is missing required columns or has invalid ``pc_id``."""
     missing = _REQUIRED_COLUMNS - set(points.columns)
     if missing:
         raise ValueError(
             f"points DataFrame is missing required columns: {sorted(missing)}"
         )
+
+    if "pc_id" in points.columns:
+        duplicated_mask = points["pc_id"].duplicated()
+        if duplicated_mask.any():
+            dup_vals = sorted(points.loc[duplicated_mask, "pc_id"].unique().tolist())
+            raise ValueError(
+                f"The 'pc_id' column contains duplicate values: {dup_vals}. "
+                "Each pc_id must be unique. "
+                "Please fix the duplicate values or remove the 'pc_id' column "
+                "to let point-collocation assign identifiers automatically."
+            )
 
 
 def _parse_time_buffer(
