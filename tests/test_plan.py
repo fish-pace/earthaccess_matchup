@@ -3544,7 +3544,7 @@ class TestShowVariablesH5py:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """show_variables() for a flat NetCDF4 prints Dimensions, Variables, Geolocation, Dataset Detail."""
+        """show_variables() for a flat NetCDF4 prints Dimensions, Variables, Geolocation."""
         nc_path = str(tmp_path / "flat.nc")
         _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
             nc_path, engine="netcdf4"
@@ -3557,7 +3557,7 @@ class TestShowVariablesH5py:
         assert "sst" in captured.out
         assert "Geolocation" in captured.out
         assert "lon" in captured.out
-        assert "Dataset Detail" in captured.out
+        assert "Dataset Detail" not in captured.out
 
     def test_show_variables_grouped_file_prints_groups_and_sst(
         self,
@@ -3578,8 +3578,8 @@ class TestShowVariablesH5py:
         # The flat merged summary should also be present
         assert "Dimensions:" in captured.out
         assert "Variables:" in captured.out
-        # Dataset Detail section should appear
-        assert "Dataset Detail" in captured.out
+        # Dataset Detail section should NOT appear
+        assert "Dataset Detail" not in captured.out
 
     def test_show_variables_coords_dict_detects_geolocation(
         self,

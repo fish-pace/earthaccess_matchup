@@ -446,9 +446,7 @@ class Plan:
         unavailable or the file format is not HDF5.
 
         Prints a concise summary for each group (from h5py), followed by a
-        flat merged ``Dimensions``/``Variables``/``Geolocation`` summary,
-        and then a ``Dataset Detail:`` section showing the xarray repr of
-        the merged flat dataset.
+        flat merged ``Dimensions``/``Variables``/``Geolocation`` summary.
 
         To obtain the full xarray representation programmatically use
         ``plan.open_dataset(0)`` instead.
@@ -631,20 +629,6 @@ class Plan:
                         "open_method={'coords': {'lat': '...', 'lon': '...'}}."
                     )
 
-            # Dataset Detail: open with xarray using dataset-based group merge
-            # (avoids slow datatree open; always uses xr.open_dataset per group).
-            try:
-                if merge is not None:
-                    ds_detail_spec = {**spec, "xarray_open": "dataset"}
-                    ds_detail = _open_and_merge_dataset_groups(
-                        file_obj, ds_detail_spec, effective_kwargs
-                    )
-                else:
-                    ds_detail = xr.open_dataset(file_obj, **effective_kwargs)  # type: ignore[arg-type]
-                print(f"\nDataset Detail:\n{ds_detail}")
-            except Exception as exc:
-                print(f"\nDataset Detail: unavailable ({exc})")
-
             return
 
         # ---------------------------------------------------------------
@@ -696,8 +680,6 @@ class Plan:
                 )
             else:
                 print(f"\nGeolocation: {msg}")
-
-        print(f"\nDataset Detail:\n{ds_flat}")
 
     # ------------------------------------------------------------------
     # Summary
