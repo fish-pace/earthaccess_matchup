@@ -7,7 +7,7 @@ Responsibilities
 * Open each granule individually (never ``open_mfdataset``) to minimise
   cloud I/O and avoid memory leaks.
 * Extract the requested variables at each point's location/time using
-  nearest-neighbour selection (gridded) or xoak k-d tree (swath).
+  nearest-neighbor selection (gridded) or ndpoint (non-gridded, e.g. swath).
 * Collect results into a ``pandas.DataFrame`` with one row per
   (point, granule) pair.
 

@@ -81,7 +81,7 @@ class Plan:
     Attributes
     ----------
     points:
-        Normalised points DataFrame (always has a ``time`` column).
+        Normalised points DataFrame (``time`` column).
     results:
         Original earthaccess result objects in search order.  Passed
         directly to ``earthaccess.open()`` when executing the plan.
