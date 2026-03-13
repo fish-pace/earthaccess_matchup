@@ -441,12 +441,17 @@ class Plan:
         self,
         open_method: "str | dict | None" = None,
     ) -> None:
-        """Print the first granule's dimensions, and variables.
+        """Print the first granule's groups, dimensions, and variables.
 
-        Prints a concise summary with ``Dimensions``/``Variables``/``Geolocation``.
+        Uses h5py for fast metadata inspection (no data loading) when the
+        file is an HDF5/NetCDF4 file.  Falls back to xarray when h5py is
+        unavailable or the file format is not HDF5.
+
+        Prints a concise summary for each group (from h5py), followed by a
+        flat merged ``Dimensions``/``Variables``/``Geolocation`` summary.
 
         To obtain the full xarray representation programmatically use
-        ``plan.open_dataset(0)`` instead or  ``plan.open_dataset(0, open_method="datatree")`` is granule is grouped netcdf.
+        ``plan.open_dataset(0)`` instead.
 
         Parameters
         ----------
