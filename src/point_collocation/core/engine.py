@@ -189,9 +189,11 @@ def matchup(
         always includes:
 
         ``pc_id``
-            The original row index from the input dataframe, allowing
-            matchup rows to be traced back to their source point even
-            when a single point matches multiple granules.
+            Point identifier.  If the input dataframe contains a ``pc_id``
+            column those values are preserved as-is; otherwise the row
+            index from the input dataframe is used.  Duplicate ``pc_id``
+            values in the input are not allowed and raise a
+            :class:`ValueError` during planning.
         ``granule_id``
             Identifier of the granule that provided this row's values.
         ``granule_lat``
@@ -206,7 +208,10 @@ def matchup(
             search result metadata rather than in the dataset itself.
             For zero-match rows, this column is ``pandas.NaT``.
 
-        Points with zero matching granules contribute a single NaN row.
+        Any extra columns present in the input dataframe are retained in
+        the output.  Points with zero matching granules contribute a
+        single NaN row.  The output is sorted to match the ``pc_id``
+        order from the input dataframe.
 
     Raises
     ------
@@ -483,6 +488,17 @@ def _execute_plan(
         save_path = pathlib.Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
 
+    # Determine whether the user supplied their own pc_id column.  If so, use
+    # those values as-is; otherwise assign the DataFrame row index as pc_id.
+    has_user_pc_id: bool = "pc_id" in plan.points.columns
+
+    # Build a mapping from pc_id value → its position in the input DataFrame so
+    # the output can be sorted to match the user's original point order.
+    if has_user_pc_id:
+        pc_id_order: dict = {val: pos for pos, val in enumerate(plan.points["pc_id"])}
+    else:
+        pc_id_order = {idx: pos for pos, idx in enumerate(plan.points.index)}
+
     # Build granule_index → [point_indices] for all matched granules
     granule_to_points: dict[int, list[object]] = {}
     zero_match_pt_indices: list[object] = []
@@ -499,7 +515,8 @@ def _execute_plan(
     # Zero-match points → single NaN row each
     for pt_idx in zero_match_pt_indices:
         row: dict = plan.points.loc[pt_idx].to_dict()
-        row["pc_id"] = pt_idx
+        if not has_user_pc_id:
+            row["pc_id"] = pt_idx
         row["granule_id"] = float("nan")
         row["granule_lat"] = float("nan")
         row["granule_lon"] = float("nan")
@@ -665,7 +682,8 @@ def _execute_plan(
                             rows_for_granule = []
                             for pt_idx in pt_indices:
                                 row = plan.points.loc[pt_idx].to_dict()
-                                row["pc_id"] = pt_idx
+                                if not has_user_pc_id:
+                                    row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
                                 row["granule_time"] = granule_time
                                 rows_for_granule.append(row)
@@ -681,7 +699,8 @@ def _execute_plan(
                             # ndpoint for the whole granule (and all future ones).
                             def _make_row(pt_idx: object) -> dict:
                                 r = plan.points.loc[pt_idx].to_dict()
-                                r["pc_id"] = pt_idx
+                                if not has_user_pc_id:
+                                    r["pc_id"] = pt_idx
                                 r["granule_id"] = gm.granule_id
                                 r["granule_time"] = granule_time
                                 return r
@@ -717,7 +736,8 @@ def _execute_plan(
                         else:
                             for pt_idx in pt_indices:
                                 row = plan.points.loc[pt_idx].to_dict()
-                                row["pc_id"] = pt_idx
+                                if not has_user_pc_id:
+                                    row["pc_id"] = pt_idx
                                 row["granule_id"] = gm.granule_id
                                 row["granule_time"] = granule_time
                                 _extract_nearest(ds, row, variables, lon_name, lat_name, time_dim)
@@ -734,7 +754,8 @@ def _execute_plan(
                     failed_granule_time = gm.begin + (gm.end - gm.begin) / 2
                     for pt_idx in pt_indices:
                         row = plan.points.loc[pt_idx].to_dict()
-                        row["pc_id"] = pt_idx
+                        if not has_user_pc_id:
+                            row["pc_id"] = pt_idx
                         row["granule_id"] = gm.granule_id
                         row["granule_lat"] = float("nan")
                         row["granule_lon"] = float("nan")
@@ -795,7 +816,8 @@ def _execute_plan(
 
     if not output_rows:
         empty = plan.points.iloc[:0].copy()
-        empty["pc_id"] = pd.Series(dtype=object)
+        if not has_user_pc_id:
+            empty["pc_id"] = pd.Series(dtype=object)
         empty["granule_id"] = pd.Series(dtype=object)
         empty["granule_lat"] = pd.Series(dtype=float)
         empty["granule_lon"] = pd.Series(dtype=float)
@@ -812,6 +834,13 @@ def _execute_plan(
         expanded = [c for c in df.columns if c.startswith(f"{var}_")]
         if expanded and var in df.columns:
             df = df.drop(columns=[var])
+
+    # Sort by the pc_id order from the input DataFrame so that output rows
+    # follow the same point ordering the user provided.  A stable sort
+    # preserves the relative order of rows with the same pc_id (e.g. multiple
+    # granules for one point).
+    df["_pc_sort"] = df["pc_id"].map(pc_id_order)
+    df = df.sort_values("_pc_sort", kind="stable").drop(columns=["_pc_sort"]).reset_index(drop=True)
 
     return df
 

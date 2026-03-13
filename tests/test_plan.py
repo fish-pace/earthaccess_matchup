@@ -2592,6 +2592,294 @@ class TestNewOutputColumns:
 
 
 # ---------------------------------------------------------------------------
+# User-supplied pc_id and extra columns
+# ---------------------------------------------------------------------------
+
+
+class TestUserPcId:
+    """Tests for user-supplied pc_id and extra column behaviour."""
+
+    def _make_plan_multi_point(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        points: pd.DataFrame,
+        nc_paths: list[str],
+        granule_metas: list[GranuleMeta],
+        point_granule_map: dict,
+    ) -> "Plan":
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = nc_paths
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        return Plan(
+            points=points,
+            results=[object() for _ in nc_paths],
+            granules=granule_metas,
+            point_granule_map=point_granule_map,
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+    def test_user_pc_id_is_used_in_output(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When pc_id is in the input df, output uses those values."""
+        nc_path = str(tmp_path / "g.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0],
+                "lon": [0.0],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+                "pc_id": [42],
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = self._make_plan_multi_point(
+            tmp_path, monkeypatch, pts, [nc_path], [gm], {0: [0]}
+        )
+
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "pc_id" in result.columns
+        assert result.loc[0, "pc_id"] == 42
+
+    def test_user_pc_id_zero_match(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Zero-match row preserves user-provided pc_id."""
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = []
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0],
+                "lon": [0.0],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+                "pc_id": [99],
+            }
+        )
+        p = Plan(
+            points=pts,
+            results=[],
+            granules=[],
+            point_granule_map={0: []},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, open_method="dataset")
+        assert result.loc[0, "pc_id"] == 99
+
+    def test_user_pc_id_duplicate_raises(self) -> None:
+        """Duplicate pc_id values in input df raise a ValueError."""
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0, 1.0],
+                "lon": [0.0, 1.0],
+                "time": pd.to_datetime(["2023-06-01", "2023-06-02"]),
+                "pc_id": [5, 5],
+            }
+        )
+        with pytest.raises(ValueError, match="pc_id.*duplicate"):
+            from point_collocation.core.plan import _plan_validate_points
+            _plan_validate_points(pts)
+
+    def test_extra_columns_retained_in_output(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Extra columns in the user df appear in the matchup output."""
+        nc_path = str(tmp_path / "g.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(nc_path)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0],
+                "lon": [0.0],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+                "pc_id": [10],
+                "pc_label": ["pace_10"],
+                "station_name": ["station_A"],
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/g.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = self._make_plan_multi_point(
+            tmp_path, monkeypatch, pts, [nc_path], [gm], {0: [0]}
+        )
+
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        assert "pc_label" in result.columns
+        assert result.loc[0, "pc_label"] == "pace_10"
+        assert "station_name" in result.columns
+        assert result.loc[0, "station_name"] == "station_A"
+
+    def test_output_sorted_by_pc_id_order_without_user_pc_id(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without user pc_id, output rows are in the same order as the input points."""
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=0).to_netcdf(nc_a)
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(nc_b)
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        # Two points: point 0 matches granule 1, point 1 matches granule 0
+        # Without sorting the output would be in granule order (point 1, point 0).
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0, 0.0],
+                "lon": [0.0, 0.0],
+                "time": pd.to_datetime(["2023-06-02T12:00:00", "2023-06-01T12:00:00"]),
+            }
+        )
+        gm_a = GranuleMeta(
+            granule_id="https://example.com/a.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        gm_b = GranuleMeta(
+            granule_id="https://example.com/b.nc",
+            begin=pd.Timestamp("2023-06-02T00:00:00Z"),
+            end=pd.Timestamp("2023-06-02T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=1,
+        )
+        p = Plan(
+            points=pts,
+            results=[object(), object()],
+            granules=[gm_a, gm_b],
+            # point 0 → granule 1 (b), point 1 → granule 0 (a)
+            point_granule_map={0: [1], 1: [0]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        # Output should be sorted by point order: pc_id 0 first, pc_id 1 second
+        assert list(result["pc_id"]) == [0, 1]
+
+    def test_output_sorted_by_user_pc_id_order(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With user pc_id, output rows follow the user's pc_id input order."""
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=0).to_netcdf(nc_a)
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(nc_b)
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0, 0.0],
+                "lon": [0.0, 0.0],
+                "time": pd.to_datetime(["2023-06-02T12:00:00", "2023-06-01T12:00:00"]),
+                "pc_id": [20, 10],
+            }
+        )
+        gm_a = GranuleMeta(
+            granule_id="https://example.com/a.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        gm_b = GranuleMeta(
+            granule_id="https://example.com/b.nc",
+            begin=pd.Timestamp("2023-06-02T00:00:00Z"),
+            end=pd.Timestamp("2023-06-02T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=1,
+        )
+        p = Plan(
+            points=pts,
+            results=[object(), object()],
+            granules=[gm_a, gm_b],
+            # point 0 (pc_id=20) → granule 1 (b), point 1 (pc_id=10) → granule 0 (a)
+            point_granule_map={0: [1], 1: [0]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        # Output should preserve user's pc_id order: 20 first (it was first in input), 10 second
+        assert list(result["pc_id"]) == [20, 10]
+
+    def test_multi_granule_same_pc_id_stays_grouped(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A point with user pc_id matching multiple granules produces adjacent rows."""
+        nc_a = str(tmp_path / "a.nc")
+        nc_b = str(tmp_path / "b.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=0).to_netcdf(nc_a)
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0], seed=1).to_netcdf(nc_b)
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_a, nc_b]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {
+                "lat": [0.0],
+                "lon": [0.0],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+                "pc_id": [77],
+            }
+        )
+        gm_a = GranuleMeta(
+            granule_id="https://example.com/a.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        gm_b = GranuleMeta(
+            granule_id="https://example.com/b.nc",
+            begin=pd.Timestamp("2023-06-01T06:00:00Z"),
+            end=pd.Timestamp("2023-06-01T18:00:00Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=1,
+        )
+        p = Plan(
+            points=pts,
+            results=[object(), object()],
+            granules=[gm_a, gm_b],
+            point_granule_map={0: [0, 1]},
+            variables=["sst"],
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(p, open_method="dataset", open_dataset_kwargs={"engine": "netcdf4"})
+        assert len(result) == 2
+        assert list(result["pc_id"]) == [77, 77]
+
+
+# ---------------------------------------------------------------------------
 # granule_range: crash recovery
 # ---------------------------------------------------------------------------
 
