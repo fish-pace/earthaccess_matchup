@@ -3559,23 +3559,42 @@ class TestShowVariablesH5py:
         assert "lon" in captured.out
         assert "Dataset Detail" not in captured.out
 
-    def test_show_variables_grouped_file_prints_groups_and_sst(
+    def test_show_variables_open_method_includes_merge_key(
         self,
         tmp_path: pathlib.Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """show_variables() with grouped HDF5 prints group info and sst variable."""
+        """open_method line always includes 'merge' key, even when it is None."""
+        nc_path = str(tmp_path / "flat.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        p = self._make_plan(tmp_path, monkeypatch, nc_path)
+        p.show_variables()
+        captured = capsys.readouterr()
+        first_line = captured.out.splitlines()[0]
+        assert first_line.startswith("open_method:")
+        assert "'merge'" in first_line
+
+    def test_show_variables_grouped_file_prints_flat_summary_and_sst(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """show_variables() with grouped HDF5 prints flat summary (no Group blocks)."""
         nc_path = str(tmp_path / "grouped.nc")
         _make_grouped_nc(nc_path)
         p = self._make_plan(tmp_path, monkeypatch, nc_path)
         p.show_variables()
         captured = capsys.readouterr()
-        assert "Group /" in captured.out
+        # Per-group blocks are no longer printed
+        assert "Group /" not in captured.out
         assert "sst" in captured.out
         assert "Geolocation" in captured.out
         assert "lon" in captured.out
-        # The flat merged summary should also be present
+        # The flat merged summary should be present
         assert "Dimensions:" in captured.out
         assert "Variables:" in captured.out
         # Dataset Detail section should NOT appear

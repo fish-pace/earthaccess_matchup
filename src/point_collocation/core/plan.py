@@ -515,8 +515,10 @@ class Plan:
                 spec = {**spec, "xarray_open": "dataset", "merge": None}
                 effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
 
-        # Print the spec summary.
+        # Print the spec summary.  Ensure "merge" is always present so the
+        # printed spec is unambiguous (it may be absent for the "auto" preset).
         display_spec = {**spec, "open_kwargs": effective_kwargs}
+        display_spec.setdefault("merge", None)
         print(f"open_method: {display_spec!r}")
 
         def _seek_back() -> None:
@@ -550,23 +552,11 @@ class Plan:
                 if relevant_groups is not None and group_path not in relevant_groups:
                     continue
 
-                print(f"\nGroup {group_path}")
                 # Collect dimension sizes from variable shapes.
-                dim_sizes: dict[str, int] = {}
                 for vinfo in vars_dict.values():
                     for dim, size in zip(vinfo["dims"], vinfo["shape"]):
                         if dim and dim != "?":
-                            dim_sizes.setdefault(dim, size)
                             merged_dims.setdefault(dim, size)
-                if dim_sizes:
-                    print(f"  Dimensions: {dim_sizes}")
-
-                if vars_dict:
-                    var_strs = [
-                        f"{vname}{vinfo['dims']}"
-                        for vname, vinfo in vars_dict.items()
-                    ]
-                    print(f"  Variables:  {', '.join(var_strs)}")
 
                 all_var_names.update(vars_dict.keys())
                 for vname in vars_dict:
