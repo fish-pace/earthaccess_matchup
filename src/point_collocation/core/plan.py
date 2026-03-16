@@ -52,7 +52,7 @@ class GranuleMeta:
     """Lightweight metadata record for a single earthaccess granule."""
 
     granule_id: str
-    """Data URL of the granule (the ``GET DATA`` URL from UMM RelatedUrls)."""
+    """Data URL of the granule, obtained from ``result.data_links()``."""
 
     begin: pd.Timestamp
     """Start of the granule's temporal coverage (UTC)."""
@@ -642,7 +642,12 @@ def plan(
     source_kwargs:
         Keyword arguments forwarded to ``earthaccess.search_data()``.
         Must contain at least one of ``"short_name"``, ``"concept_id"``,
-        or ``"doi"``.
+        or ``"doi"``.  The special keys ``"access"`` and ``"in_region"``
+        are *not* forwarded to ``search_data()``; instead they are passed
+        to ``result.data_links()`` on every returned granule to control
+        which link type is used (e.g. ``"access": "direct"`` for S3).
+        Granules whose ``data_links()`` returns an empty list for the
+        given kwargs are silently excluded from the plan.
     time_buffer:
         Extra temporal margin when matching a point to a granule.  A
         point at time *t* matches a granule whose coverage is
