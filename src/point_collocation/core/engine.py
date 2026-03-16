@@ -925,6 +925,46 @@ def _slice_grid_to_points(
     return sliced
 
 
+def _drop_nan_geoloc(
+    ds: xr.Dataset,
+    lat_name: str,
+    lon_name: str,
+) -> xr.Dataset:
+    """Return *ds* with pixels that have NaN/Inf lat or lon removed.
+
+    Some swath products (e.g. DSCOVR EPIC HE5) store a large fill value
+    (≈ −1.27e30) for pixels outside the valid Earth disk.  When xarray
+    reads those pixels it converts the fill value to NaN.  Passing NaN
+    coordinates to scipy's or xoak's KD-tree raises a ``ValueError``.
+    This helper stacks all spatial dimensions, removes the bad pixels,
+    and returns a dataset whose 1-D layout is safe for ``set_xindex()``.
+
+    If all coordinates are finite the dataset is returned unchanged.
+    """
+    lat_arr = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
+    lon_arr = ds.coords[lon_name] if lon_name in ds.coords else ds[lon_name]
+
+    lat_vals = np.asarray(lat_arr)
+    lon_vals = np.asarray(lon_arr)
+
+    if np.all(np.isfinite(lat_vals)) and np.all(np.isfinite(lon_vals)):
+        return ds  # Fast path — nothing to do.
+
+    spatial_dims = lat_arr.dims
+    stacked = ds.stack({"__pc__": spatial_dims}).reset_index("__pc__")
+
+    lat_s = stacked.coords[lat_name] if lat_name in stacked.coords else stacked[lat_name]
+    lon_s = stacked.coords[lon_name] if lon_name in stacked.coords else stacked[lon_name]
+    valid = np.isfinite(lat_s.values) & np.isfinite(lon_s.values)
+
+    if not np.any(valid):
+        # All pixels are bad; return the stacked-but-unfiltered dataset so that
+        # the caller can propagate NaN results rather than crashing here.
+        return stacked
+
+    return stacked.isel({"__pc__": valid})
+
+
 def _extract_nearest(
     ds: xr.Dataset,
     row: dict,
@@ -1032,6 +1072,9 @@ def _extract_xoak(
         ds_work[lat_name] = xr.DataArray(lat_2d, dims=lat_dims)
         ds_work[lon_name] = xr.DataArray(lon_2d, dims=lat_dims)
 
+    # Drop pixels where lat/lon are NaN or Inf (e.g. fill values outside swath).
+    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name)
+
     # Build the NDPointIndex using the sklearn k-d tree adapter.
     indexed_ds = ds_work.set_xindex(
         [lat_name, lon_name],
@@ -1134,6 +1177,9 @@ def _extract_xoak_batch(
         lat_dims = lat_arr.dims + lon_arr.dims  # e.g. ('lat', 'lon')
         ds_work[lat_name] = xr.DataArray(lat_2d, dims=lat_dims)
         ds_work[lon_name] = xr.DataArray(lon_2d, dims=lat_dims)
+
+    # Drop pixels where lat/lon are NaN or Inf (e.g. fill values outside swath).
+    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name)
 
     # Build the NDPointIndex once for all query points.
     indexed_ds = ds_work.set_xindex(
@@ -1256,6 +1302,9 @@ def _extract_ndpoint_batch(
         lat_dims = lat_arr.dims + lon_arr.dims  # e.g. ('lat', 'lon')
         ds_work[lat_name] = xr.DataArray(lat_2d, dims=lat_dims)
         ds_work[lon_name] = xr.DataArray(lon_2d, dims=lat_dims)
+
+    # Drop pixels where lat/lon are NaN or Inf (e.g. fill values outside swath).
+    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name)
 
     # Build the NDPointIndex once for all query points using the built-in
     # scipy adapter (ScipyKDTreeAdapter).  No tree_adapter_cls argument is
