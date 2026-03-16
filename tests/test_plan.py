@@ -5173,6 +5173,82 @@ class TestXoakSpatialMethod:
         assert sliced.sizes["lat"] < ds.sizes["lat"]
         assert sliced.sizes["lon"] < ds.sizes["lon"]
 
+    def test_swath_nan_geoloc_pixels_are_ignored(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swath pixels with NaN lat/lon (e.g. fill values outside Earth disk) are ignored.
+
+        Regression test for DSCOVR EPIC HE5 data where fill values (~-1.27e30)
+        outside the valid Earth disk are converted to NaN by xarray.  Without
+        the fix, the xoak k-d tree raises ``ValueError`` when building the index
+        with NaN coordinates.  The k-d tree must skip those pixels.
+        """
+        pytest.importorskip("xoak")
+
+        # Build a swath where the last row has NaN lat/lon (simulating fill values).
+        rng = np.random.default_rng(42)
+        lat = rng.uniform(-10.0, 10.0, (4, 5)).astype(np.float32)
+        lon = rng.uniform(-30.0, 30.0, (4, 5)).astype(np.float32)
+        sst = rng.uniform(20.0, 30.0, (4, 5)).astype(np.float32)
+        # Mark last row as NaN (simulating out-of-swath fill values).
+        lat[-1, :] = np.nan
+        lon[-1, :] = np.nan
+
+        nc_path = str(tmp_path / "swath_nan.nc")
+        xr.Dataset(
+            {
+                "lat": (["nrows", "ncols"], lat),
+                "lon": (["nrows", "ncols"], lon),
+                "sst": (["nrows", "ncols"], sst),
+            }
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        # Query the exact location of a valid pixel; expect its sst value back.
+        lat_val = float(lat[0, 0])
+        lon_val = float(lon[0, 0])
+        expected_sst = float(sst[0, 0])
+
+        pts = pd.DataFrame(
+            {
+                "lat": [lat_val],
+                "lon": [lon_val],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath_nan.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            open_method="datatree-merge",
+            variables=["sst"],
+            spatial_method="xoak",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "sst" in result.columns
+        assert len(result) == 1
+        # Result must be a finite value from a valid pixel, not NaN.
+        assert not math.isnan(result.loc[0, "sst"])
+        assert result.loc[0, "sst"] == pytest.approx(expected_sst, rel=1e-4)
+
 
 class TestMissingNdpoint:
     """Test that missing scipy raises a clear ImportError for spatial_method='ndpoint'."""
@@ -5529,6 +5605,82 @@ class TestNdpointSpatialMethod:
         assert "sst" in result.columns
         assert len(result) == 1
         assert not math.isnan(result.loc[0, "sst"])
+
+    def test_swath_nan_geoloc_pixels_are_ignored(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swath pixels with NaN lat/lon (e.g. fill values outside Earth disk) are ignored.
+
+        Regression test for DSCOVR EPIC HE5 data where fill values (~-1.27e30)
+        outside the valid Earth disk are converted to NaN by xarray.  Without
+        the fix, scipy's KD-tree raises ``ValueError`` when building the index
+        with NaN coordinates.  The k-d tree must skip those pixels.
+        """
+        pytest.importorskip("scipy")
+
+        # Build a swath where the last row has NaN lat/lon (simulating fill values).
+        rng = np.random.default_rng(42)
+        lat = rng.uniform(-10.0, 10.0, (4, 5)).astype(np.float32)
+        lon = rng.uniform(-30.0, 30.0, (4, 5)).astype(np.float32)
+        sst = rng.uniform(20.0, 30.0, (4, 5)).astype(np.float32)
+        # Mark last row as NaN (simulating out-of-swath fill values).
+        lat[-1, :] = np.nan
+        lon[-1, :] = np.nan
+
+        nc_path = str(tmp_path / "swath_nan.nc")
+        xr.Dataset(
+            {
+                "lat": (["nrows", "ncols"], lat),
+                "lon": (["nrows", "ncols"], lon),
+                "sst": (["nrows", "ncols"], sst),
+            }
+        ).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        # Query the exact location of a valid pixel; expect its sst value back.
+        lat_val = float(lat[0, 0])
+        lon_val = float(lon[0, 0])
+        expected_sst = float(sst[0, 0])
+
+        pts = pd.DataFrame(
+            {
+                "lat": [lat_val],
+                "lon": [lon_val],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath_nan.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            open_method="datatree-merge",
+            variables=["sst"],
+            spatial_method="ndpoint",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "sst" in result.columns
+        assert len(result) == 1
+        # Result must be a finite value from a valid pixel, not NaN.
+        assert not math.isnan(result.loc[0, "sst"])
+        assert result.loc[0, "sst"] == pytest.approx(expected_sst, rel=1e-4)
 
 
 class TestAutoSpatialMethod:
