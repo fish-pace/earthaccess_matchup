@@ -52,7 +52,7 @@ class GranuleMeta:
     """Lightweight metadata record for a single earthaccess granule."""
 
     granule_id: str
-    """Data URL of the granule (the ``GET DATA`` URL from UMM RelatedUrls)."""
+    """Data URL of the granule, obtained from ``result.data_links()``."""
 
     begin: pd.Timestamp
     """Start of the granule's temporal coverage (UTC)."""
@@ -642,7 +642,12 @@ def plan(
     source_kwargs:
         Keyword arguments forwarded to ``earthaccess.search_data()``.
         Must contain at least one of ``"short_name"``, ``"concept_id"``,
-        or ``"doi"``.
+        or ``"doi"``.  The special keys ``"access"`` and ``"in_region"``
+        are *not* forwarded to ``search_data()``; instead they are passed
+        to ``result.data_links()`` on every returned granule to control
+        which link type is used (e.g. ``"access": "direct"`` for S3).
+        Granules whose ``data_links()`` returns an empty list for the
+        given kwargs are silently excluded from the plan.
     time_buffer:
         Extra temporal margin when matching a point to a granule.  A
         point at time *t* matches a granule whose coverage is
@@ -770,6 +775,12 @@ def _search_earthaccess(
     on each result's ``data_links()``.  This is faster than passing
     ``granule_name`` directly to ``earthaccess.search_data()``.
 
+    The keys ``"access"`` and ``"in_region"`` are extracted from
+    *source_kwargs* and forwarded to ``result.data_links()`` on every result.
+    They are not passed to ``earthaccess.search_data()``.  Granules for
+    which ``data_links()`` returns an empty list are silently excluded from
+    the returned results (treated as non-existent for this plan).
+
     A ``bounding_box`` ``(lon_min, lat_min, lon_max, lat_max)`` is
     automatically derived from *points* and added to the search unless the
     caller already supplies ``"bounding_box"`` in *source_kwargs*.  This
@@ -780,7 +791,7 @@ def _search_earthaccess(
     -------
     results:
         Earthaccess result objects in original search order, filtered by
-        ``granule_name`` pattern when provided.
+        ``granule_name`` pattern when provided and by non-empty data_links.
     granule_metas:
         :class:`GranuleMeta` for each result (same order as *results*).
 
@@ -811,6 +822,13 @@ def _search_earthaccess(
     # Extract granule_name for post-search filtering (faster than passing to search_data).
     granule_name_pattern: str | None = base_kwargs.pop("granule_name", None)
 
+    # Extract data_links() kwargs: "access" and "in_region" are forwarded to
+    # data_links() but must not be passed to earthaccess.search_data().
+    data_links_kwargs: dict[str, Any] = {}
+    for key in ("access", "in_region"):
+        if key in base_kwargs:
+            data_links_kwargs[key] = base_kwargs.pop(key)
+
     times = pd.to_datetime(points["time"])
     min_date = str(times.min().date())
     max_date = str(times.max().date())
@@ -830,24 +848,31 @@ def _search_earthaccess(
 
     results: list[Any] = list(earthaccess.search_data(**search_kwargs))
 
+    # Exclude granules with no downloadable links — treat them as non-existent.
+    results = [res for res in results if res.data_links(**data_links_kwargs)]
+
     if granule_name_pattern is not None:
         results = [
             res
             for res in results
             if any(
                 fnmatch.fnmatch(link, granule_name_pattern)
-                for link in res.data_links()
+                for link in res.data_links(**data_links_kwargs)
             )
         ]
 
     granule_metas: list[GranuleMeta] = []
     for i, result in enumerate(results):
-        granule_metas.append(_extract_granule_meta(result, result_index=i))
+        granule_metas.append(
+            _extract_granule_meta(result, result_index=i, data_links_kwargs=data_links_kwargs)
+        )
 
     return results, granule_metas
 
 
-def _extract_granule_meta(result: Any, *, result_index: int) -> GranuleMeta:
+def _extract_granule_meta(
+    result: Any, *, result_index: int, data_links_kwargs: dict[str, Any] | None = None
+) -> GranuleMeta:
     """Build a :class:`GranuleMeta` from a single earthaccess result object."""
     umm = _get_umm(result)
 
@@ -855,14 +880,14 @@ def _extract_granule_meta(result: Any, *, result_index: int) -> GranuleMeta:
     begin = pd.Timestamp(rdt["BeginningDateTime"])
     end = pd.Timestamp(rdt["EndingDateTime"])
 
-    # Prefer result.data_links() over UMM parsing: earthaccess selects the
-    # correct URL (HTTPS vs S3) based on where the user is running.
-    links: list[str] = result.data_links() if hasattr(result, "data_links") else []
-    if links:
-        https_links = [url for url in links if not url.startswith("s3://")]
-        granule_id = https_links[0] if https_links else links[0]
-    else:
-        granule_id = _get_data_url(umm)
+    # Use result.data_links() to get the download URL.  data_links_kwargs
+    # (e.g. access, in_region) are forwarded from source_kwargs so the caller
+    # controls which link type is used.  Results with no links are filtered
+    # out by _search_earthaccess before this function is called.
+    _link_kwargs: dict[str, Any] = data_links_kwargs or {}
+    links: list[str] = result.data_links(**_link_kwargs)
+    https_links = [url for url in links if not url.startswith("s3://")]
+    granule_id: str = https_links[0] if https_links else links[0]
 
     bbox = _get_bbox(umm)
     polygon = _get_polygon_points(umm)
@@ -901,27 +926,6 @@ def _get_umm(result: Any) -> dict[str, Any]:
 
     raise ValueError(
         f"Cannot extract UMM metadata from result of type {type(result).__name__!r}."
-    )
-
-
-def _get_data_url(umm: dict[str, Any]) -> str:
-    """Return the ``GET DATA`` URL from UMM ``RelatedUrls``.
-
-    Prefers non-S3 URLs (i.e., HTTPS) when both are available.
-    """
-    related_urls: list[dict[str, Any]] = umm.get("RelatedUrls", [])
-    # Prefer HTTPS GET DATA
-    for url_info in related_urls:
-        url = url_info.get("URL", "")
-        if url_info.get("Type") == "GET DATA" and not url.startswith("s3://"):
-            return url
-    # Fall back to any GET DATA URL (S3 included)
-    for url_info in related_urls:
-        if url_info.get("Type") == "GET DATA":
-            return url_info["URL"]
-    raise ValueError(
-        "No 'GET DATA' URL found in granule RelatedUrls. "
-        f"Available types: {[u.get('Type') for u in related_urls]}"
     )
 
 
