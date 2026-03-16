@@ -857,12 +857,41 @@ def _extract_granule_meta(result: Any, *, result_index: int) -> GranuleMeta:
 
     # Prefer result.data_links() over UMM parsing: earthaccess selects the
     # correct URL (HTTPS vs S3) based on where the user is running.
-    links: list[str] = result.data_links() if hasattr(result, "data_links") else []
-    if links:
-        https_links = [url for url in links if not url.startswith("s3://")]
-        granule_id = https_links[0] if https_links else links[0]
-    else:
-        granule_id = _get_data_url(umm)
+    granule_id: str | None = None
+    if hasattr(result, "data_links"):
+        links: list[str] = result.data_links()
+        if links:
+            https_links = [url for url in links if not url.startswith("s3://")]
+            granule_id = https_links[0] if https_links else links[0]
+        else:
+            # data_links() returns only HTTPS links by default.  For cloud-hosted
+            # collections the HTTPS links may be absent; try direct-access (S3) links
+            # as a secondary source.
+            try:
+                s3_links: list[str] = result.data_links(access="direct")
+                if s3_links:
+                    granule_id = s3_links[0]
+            except TypeError:
+                # Older earthaccess versions may not support the 'access' parameter;
+                # fall through to the UMM RelatedUrls parsing below.
+                pass
+
+    if granule_id is None:
+        try:
+            granule_id = _get_data_url(umm)
+        except ValueError:
+            # Last resort: use the CMR concept-id as a stable, unique identifier.
+            # granule_id is used for display and result tracking; the earthaccess
+            # result object (not granule_id) is what drives actual file access.
+            try:
+                granule_id = result["meta"]["concept-id"]
+            except (KeyError, TypeError):
+                raise ValueError(
+                    "Cannot determine a granule identifier: no data_links, "
+                    "no 'GET DATA' URL in RelatedUrls, and no concept-id in meta. "
+                    f"RelatedUrls available types: "
+                    f"{[u.get('Type') for u in umm.get('RelatedUrls', [])]}"
+                )
 
     bbox = _get_bbox(umm)
     polygon = _get_polygon_points(umm)

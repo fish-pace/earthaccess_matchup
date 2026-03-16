@@ -298,6 +298,87 @@ class TestExtractGranuleMetaUsesDataLinks:
         meta = _extract_granule_meta(result, result_index=0)
         assert meta.granule_id == umm_url
 
+    def test_falls_back_to_s3_when_https_empty(self) -> None:
+        """When data_links() returns [] but data_links(access='direct') returns S3 links."""
+        s3_url = "s3://bucket/granule.nc"
+
+        umm = {
+            "TemporalExtent": {
+                "RangeDateTime": {
+                    "BeginningDateTime": "2023-06-01T00:00:00Z",
+                    "EndingDateTime": "2023-06-01T23:59:59Z",
+                }
+            },
+            "SpatialExtent": {
+                "HorizontalSpatialDomain": {
+                    "Geometry": {
+                        "BoundingRectangles": [
+                            {
+                                "WestBoundingCoordinate": -180.0,
+                                "SouthBoundingCoordinate": -90.0,
+                                "EastBoundingCoordinate": 180.0,
+                                "NorthBoundingCoordinate": 90.0,
+                            }
+                        ]
+                    }
+                }
+            },
+            "RelatedUrls": [],
+        }
+
+        result = MagicMock()
+        result.__getitem__ = lambda _, key: {"umm": umm}[key]
+        result.data_links.side_effect = lambda access=None: [s3_url] if access == "direct" else []
+
+        meta = _extract_granule_meta(result, result_index=0)
+        assert meta.granule_id == s3_url
+        # Verify data_links(access="direct") was actually attempted.
+        result.data_links.assert_any_call(access="direct")
+
+    def test_falls_back_to_concept_id_when_no_related_urls(self) -> None:
+        """When data_links() returns [] and RelatedUrls is empty, use CMR concept-id.
+
+        This matches the real-world scenario reported in the issue where
+        ``any(res.data_links() == [] for res in results)`` is True.
+        """
+        concept_id = "G2834307209-LARC_ASDC"
+
+        umm = {
+            "TemporalExtent": {
+                "RangeDateTime": {
+                    "BeginningDateTime": "2023-06-01T00:00:00Z",
+                    "EndingDateTime": "2023-06-01T23:59:59Z",
+                }
+            },
+            "SpatialExtent": {
+                "HorizontalSpatialDomain": {
+                    "Geometry": {
+                        "BoundingRectangles": [
+                            {
+                                "WestBoundingCoordinate": -180.0,
+                                "SouthBoundingCoordinate": -90.0,
+                                "EastBoundingCoordinate": 180.0,
+                                "NorthBoundingCoordinate": 90.0,
+                            }
+                        ]
+                    }
+                }
+            },
+            # No RelatedUrls at all — as seen in some CMR records.
+        }
+        meta_section = {"concept-id": concept_id}
+
+        result = MagicMock()
+        result.__getitem__ = lambda _, key: {"umm": umm, "meta": meta_section}[key]
+        # Both data_links() and data_links(access="direct") return empty.
+        result.data_links.return_value = []
+
+        meta = _extract_granule_meta(result, result_index=0)
+        assert meta.granule_id == concept_id
+        # Verify both data_links() and the S3 fallback were attempted.
+        result.data_links.assert_any_call()
+        result.data_links.assert_any_call(access="direct")
+
 
 class TestGetBbox:
     def test_bounding_rectangles(self) -> None:
