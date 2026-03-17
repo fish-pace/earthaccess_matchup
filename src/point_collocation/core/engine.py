@@ -929,6 +929,9 @@ def _drop_nan_geoloc(
     ds: xr.Dataset,
     lat_name: str,
     lon_name: str,
+    pt_lats: list[float] | None = None,
+    pt_lons: list[float] | None = None,
+    bbox_pad: float = 1.0,
 ) -> xr.Dataset:
     """Return *ds* with pixels that have NaN/Inf lat or lon removed.
 
@@ -941,7 +944,15 @@ def _drop_nan_geoloc(
     Stacking requires xarray ≥ 2026.2 (``NDPointIndex`` support for
     multiple coordinate variables sharing one dimension).
 
-    If all coordinates are finite the dataset is returned unchanged.
+    When *pt_lats* and *pt_lons* are provided (the query-point coordinates),
+    the stacked pixels are also filtered to the padded bounding box of those
+    points so that the k-d tree is not built over the entire swath/disk.
+    This bbox pre-filter is applied together with the NaN filter in a single
+    pass after stacking.
+
+    If all coordinates are finite the dataset is returned unchanged (fast path),
+    regardless of whether *pt_lats*/*pt_lons* are provided.  The bbox filter is
+    only applied during the stacking pass that is triggered by NaN/Inf values.
     """
     lat_arr = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
     lon_arr = ds.coords[lon_name] if lon_name in ds.coords else ds[lon_name]
@@ -952,9 +963,9 @@ def _drop_nan_geoloc(
     if np.all(np.isfinite(lat_vals)) and np.all(np.isfinite(lon_vals)):
         return ds  # Fast path — nothing to do.
 
-    # NaN/Inf values detected — stacking is required.  NDPointIndex in
-    # xarray < 2026.2 cannot handle 2 coordinate variables on 1 stacked
-    # dimension and will raise a confusing ValueError.  Check the version
+    # NaN/Inf values detected (or bbox filter requested) — stacking is required.
+    # NDPointIndex in xarray < 2026.2 cannot handle 2 coordinate variables on 1
+    # stacked dimension and will raise a confusing ValueError.  Check the version
     # now and exit with a clear message rather than letting xarray crash.
     import importlib.metadata
     from packaging.version import Version
@@ -977,9 +988,22 @@ def _drop_nan_geoloc(
     lon_s = stacked.coords[lon_name] if lon_name in stacked.coords else stacked[lon_name]
     valid = np.isfinite(lat_s.values) & np.isfinite(lon_s.values)
 
+    # Apply bounding-box pre-filter when query points are provided so that
+    # we don't build the k-d tree over the entire swath/disk.
+    if pt_lats is not None and pt_lons is not None and np.any(valid):
+        min_lat = min(pt_lats) - bbox_pad
+        max_lat = max(pt_lats) + bbox_pad
+        min_lon = min(pt_lons) - bbox_pad
+        max_lon = max(pt_lons) + bbox_pad
+        bbox_mask = (
+            (lat_s.values >= min_lat) & (lat_s.values <= max_lat)
+            & (lon_s.values >= min_lon) & (lon_s.values <= max_lon)
+        )
+        valid = valid & bbox_mask
+
     if not np.any(valid):
-        # All pixels are bad; return the stacked-but-unfiltered dataset so that
-        # the caller can propagate NaN results rather than crashing here.
+        # All pixels are bad (or outside bbox); return the stacked-but-unfiltered
+        # dataset so that the caller can propagate NaN results rather than crashing.
         return stacked
 
     return stacked.isel({"__pc__": valid})
@@ -1199,7 +1223,12 @@ def _extract_xoak_batch(
         ds_work[lon_name] = xr.DataArray(lon_2d, dims=lat_dims)
 
     # Drop pixels where lat/lon are NaN or Inf (e.g. fill values outside swath).
-    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name)
+    # For 2-D irregular coordinates, also apply a bbox pre-filter so that the
+    # k-d tree is built only over the region of interest rather than the full
+    # swath or disk.
+    _pt_lats = [float(r["lat"]) for r in rows]
+    _pt_lons = [float(r["lon"]) for r in rows]
+    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name, pt_lats=_pt_lats, pt_lons=_pt_lons)
 
     # Build the NDPointIndex once for all query points.
     indexed_ds = ds_work.set_xindex(
@@ -1324,7 +1353,12 @@ def _extract_ndpoint_batch(
         ds_work[lon_name] = xr.DataArray(lon_2d, dims=lat_dims)
 
     # Drop pixels where lat/lon are NaN or Inf (e.g. fill values outside swath).
-    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name)
+    # For 2-D irregular coordinates, also apply a bbox pre-filter so that the
+    # k-d tree is built only over the region of interest rather than the full
+    # swath or disk.
+    _pt_lats = [float(r["lat"]) for r in rows]
+    _pt_lons = [float(r["lon"]) for r in rows]
+    ds_work = _drop_nan_geoloc(ds_work, lat_name, lon_name, pt_lats=_pt_lats, pt_lons=_pt_lons)
 
     # Build the NDPointIndex once for all query points using the built-in
     # scipy adapter (ScipyKDTreeAdapter).  No tree_adapter_cls argument is

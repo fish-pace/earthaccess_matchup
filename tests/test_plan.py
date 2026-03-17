@@ -5705,8 +5705,48 @@ class TestNdpointSpatialMethod:
         with pytest.raises(RuntimeError, match="xarray"):
             _drop_nan_geoloc(ds, "lat", "lon")
 
+    def test_drop_nan_geoloc_bbox_filter_reduces_pixel_count(self) -> None:
+        """When pt_lats/pt_lons are provided, only pixels within the bbox are kept."""
+        pytest.importorskip("scipy")
+        import numpy as np
+        import xarray as xr
+        from point_collocation.core.engine import _drop_nan_geoloc
 
-class TestAutoSpatialMethod:
+        # 4x4 swath: last row is NaN (fill values).  Rows 0-2 span a wide area.
+        # Row 1 uses lon values close to 0 so a tight bbox around (0, 0) can
+        # select only those pixels.
+        lat = np.array([
+            [5.0, 5.0, 5.0, 5.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [-5.0, -5.0, -5.0, -5.0],
+            [np.nan, np.nan, np.nan, np.nan],
+        ], dtype=np.float32)
+        lon = np.array([
+            [-30.0, -10.0, 10.0, 30.0],
+            [-0.5,  -0.2,  0.2,  0.5],   # all within ±1° of lon=0
+            [-30.0, -10.0, 10.0, 30.0],
+            [np.nan, np.nan, np.nan, np.nan],
+        ], dtype=np.float32)
+        ds = xr.Dataset(
+            {"sst": (["r", "c"], np.ones((4, 4)))},
+            coords={"lat": (["r", "c"], lat), "lon": (["r", "c"], lon)},
+        )
+
+        # Without bbox filter: all 12 valid pixels (3 rows × 4 cols) are returned.
+        result_no_bbox = _drop_nan_geoloc(ds, "lat", "lon")
+        assert result_no_bbox.sizes["__pc__"] == 12
+
+        # With bbox filter centred on (0, 0) with 1° pad: only the 4 pixels in
+        # row 1 (lat=0, lon ∈ {-0.5, -0.2, 0.2, 0.5}) survive.
+        result_bbox = _drop_nan_geoloc(ds, "lat", "lon", pt_lats=[0.0], pt_lons=[0.0])
+        assert result_bbox.sizes["__pc__"] < 12
+        # Every kept pixel must be within the padded bbox.
+        kept_lats = result_bbox.coords["lat"].values
+        kept_lons = result_bbox.coords["lon"].values
+        assert np.all(np.abs(kept_lats) <= 1.0)
+        assert np.all(np.abs(kept_lons) <= 1.0)
+
+
     """Tests for spatial_method='auto' (default): dim-based routing + nearest→ndpoint fallback."""
 
     def _make_granule_meta(self) -> "GranuleMeta":
