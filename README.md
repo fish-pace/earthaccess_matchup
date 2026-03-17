@@ -10,7 +10,7 @@ Full documentation is available at: **<https://fish-pace.github.io/point-colloca
 - [Quickstart](https://fish-pace.github.io/point-collocation/quickstart/)
 - [API Reference](https://fish-pace.github.io/point-collocation/api/)
 
-Examples are included for PACE, TEMPO, ICESat-2 ATL21, ECCO and MUR.
+Examples are included for PACE, MUR, TEMPO, ICESat-2 ATL21, ECCO and DISCOVR EPIC.
 
 ## PyPI
 
