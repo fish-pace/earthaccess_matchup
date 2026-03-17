@@ -88,14 +88,14 @@ plan.summary(n=0)
 
 ### Show the groups in the files
 
-`plan.show_variables()` will open a granules and show us the groups. This will be verbose but will help us see what groups we want. This uses `open_method="auto"` which is not what we want but is enough to see what the groups are. If you scroll to the bottom, you will see that it could not find the lat/lon variables.
+`plan.open_dataset(0, open_method="auto")` will open a granule and show us the open_method spec and geolocation. This uses `open_method="auto"` which is not what we want but is enough to see what the groups are.
 
 Looking at this, we see we want groups `"/"` and `"/monthly"`. Unfortunately, getting the daily values from these files would require setting a time variable somehow. The coords are `grid_lat` and `grid_lon`.
 
 
 ```python
 %%time
-plan.show_variables()
+plan.open_dataset(0, open_method="auto")
 ```
 
     open_method: {'xarray_open': 'auto', 'open_kwargs': {'chunks': {}, 'engine': 'h5netcdf', 'decode_timedelta': False}, 'coords': 'auto', 'set_coords': True, 'dim_renames': None, 'auto_align_phony_dims': None}

@@ -491,6 +491,31 @@ def _apply_coords(ds: xr.Dataset, spec: dict) -> tuple[xr.Dataset, str, str]:
     )
 
 
+def _geoloc_description(ds: "xr.Dataset", lon_name: str, lat_name: str, spec: dict) -> str:
+    """Return a human-readable geolocation line for printing in open_dataset.
+
+    The description notes *how* the pair was found:
+
+    * ``"auto detected with cf_xarray"`` — CF-convention attributes used.
+    * ``"auto detected by name"`` — name-based fallback used.
+    * ``"specified"`` — caller provided an explicit ``coords`` dict.
+    """
+    coords = spec.get("coords", "auto")
+
+    lon_var = ds.coords[lon_name] if lon_name in ds.coords else ds[lon_name]
+    lat_var = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
+    dims_str = f"lon dims={tuple(lon_var.dims)}, lat dims={tuple(lat_var.dims)}"
+    pair_str = f"({lon_name!r}, {lat_name!r})"
+
+    if isinstance(coords, dict):
+        return f"Geolocation specified: {pair_str} — {dims_str}"
+
+    # "auto" or list — check whether cf_xarray drove the detection.
+    cf_lons = _cf_geoloc_names(ds, "longitude")
+    method = "auto detected with cf_xarray" if lon_name in cf_lons else "auto detected by name"
+    return f"Geolocation {method}: {pair_str} — {dims_str}"
+
+
 # ---------------------------------------------------------------------------
 # Dataset-based group merge helpers
 # ---------------------------------------------------------------------------
@@ -635,7 +660,7 @@ def _open_and_merge_dataset_groups(
 
 
 # ---------------------------------------------------------------------------
-# h5py-based file structure inspection (for show_variables)
+# h5py-based file structure inspection
 # ---------------------------------------------------------------------------
 
 
@@ -878,8 +903,13 @@ def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
 
     Attempts the fast ``xr.open_dataset`` path first; if lat/lon can be
     identified, returns a copy of *spec* with ``"xarray_open"`` set to
-    ``"dataset"``.  On failure, falls back to the DataTree merge path and
-    returns a spec with ``"xarray_open"`` set to ``"datatree"``.
+    ``"dataset"`` and ``"merge"`` set to ``None``.
+
+    On failure, falls back to opening as a DataTree (with ``"merge": None``
+    so the raw DataTree is returned to the caller).  The caller is responsible
+    for specifying which groups to merge via an explicit dict spec, e.g.
+    ``open_method={'xarray_open': 'datatree', 'merge': ['group1', 'group2'],
+    'coords': {'lat': '...', 'lon': '...'}}``.
 
     *file_obj* is seeked back to position 0 after each probe attempt so that
     the caller can re-open it for actual data extraction.
@@ -929,18 +959,25 @@ def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
     _seek_back()
 
     # --- Try the DataTree path ---
+    # Return a raw DataTree (merge=None) — it is the caller's responsibility
+    # to specify which groups to merge and where the coords are via an explicit
+    # open_method dict.  We only need to verify that the file opens as a
+    # DataTree with at least one non-empty node.
     datatree_spec: dict = {
         **spec,
         "xarray_open": "datatree",
-        "merge": spec.get("merge", "all"),
-        "merge_kwargs": spec.get("merge_kwargs", {}),
+        "merge": None,
     }
     datatree_error: BaseException | None = None
     try:
         dt = _open_datatree_fn(file_obj, effective_kwargs)
         try:
-            ds = _merge_datatree_with_spec(dt, datatree_spec)
-            _apply_coords(ds, datatree_spec)
+            has_data = any(
+                len(node.ds.data_vars) > 0 or len(node.ds.coords) > 0
+                for node in dt.subtree
+            )
+            if not has_data:
+                raise ValueError("DataTree has no data in any group.")
         finally:
             if hasattr(dt, "close"):
                 dt.close()
@@ -950,12 +987,12 @@ def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
         datatree_error = exc
 
     raise ValueError(
-        "open_method='auto' failed to identify lat/lon coordinates via both "
-        "the dataset and DataTree paths.\n"
+        "open_method='auto' failed to open the granule via both "
+        "the flat-dataset and DataTree paths.\n"
         f"  Dataset attempt: {dataset_error!s}\n"
         f"  DataTree attempt: {datatree_error!s}\n"
-        "Specify open_method='datatree-merge' or a dict spec with explicit coords."
-    ) from datatree_error
+        "Specify open_method='datatree-merge' or a dict spec to diagnose further."
+    ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1169,7 @@ def _open_as_flat_dataset_auto(
                 f"  DataTree attempt: {dt_open_exc!s}\n"
                 "Specify open_method='datatree-merge' or a dict spec to "
                 "diagnose further."
-            ) from dt_open_exc
+            ) from None
 
         ds = _merge_datatree_with_spec(dt, datatree_spec)
         try:
@@ -1146,7 +1183,7 @@ def _open_as_flat_dataset_auto(
                 "Fix: specify open_method with explicit coords, e.g.\n"
                 "  open_method={'xarray_open': 'datatree', 'merge': 'all', "
                 "'coords': {'lat': 'VariableName', 'lon': 'VariableName'}}"
-            ) from coord_exc
+            ) from None
 
         yield (ds, lon_name, lat_name)
     finally:

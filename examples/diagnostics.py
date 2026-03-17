@@ -1,6 +1,6 @@
 """Example 3 — variable inspection and error handling.
 
-Demonstrates how to use ``plan.show_variables()`` to inspect available
+Demonstrates how to use ``plan.open_dataset()`` to inspect available
 variables before running a matchup, and how to handle the case where a
 requested variable is missing.
 
@@ -11,7 +11,7 @@ Run::
 What it shows
 -------------
 * Using ``pc.plan()`` with ``data_source='earthaccess'``.
-* Calling ``plan.show_variables()`` to preview dimensions, variables, and
+* Calling ``plan.open_dataset(0)`` to preview dimensions, variables, and
   geolocation detection results before committing to a full extraction.
 * Running ``pc.matchup(plan, variables=[...])`` for L3/gridded data.
 * Requires earthdata authentication (``earthaccess.login()``).
@@ -58,8 +58,10 @@ plan = pc.plan(
     },
 )
 
-print("Available variables:")
-plan.show_variables()
+print("Available variables (open_method spec and geolocation):")
+ds = plan.open_dataset(0)
+print(list(ds.data_vars))
+ds.close()
 print()
 
 # ---------------------------------------------------------------------------

@@ -174,7 +174,7 @@ plan.summary()
 # discover no lat/lon and then try xr.open_datatree + merge. 
 # If you know, the netcdfs are grouped, you can pass in
 # open_method="datatree-merge" yourself
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     open_method: {'xarray_open': 'datatree', 'open_kwargs': {'chunks': {}, 'engine': 'h5netcdf', 'decode_timedelta': False}, 'coords': 'auto', 'set_coords': True, 'dim_renames': None, 'auto_align_phony_dims': None, 'merge': 'all', 'merge_kwargs': {}}
@@ -448,7 +448,7 @@ out = pc.matchup(plan, open_method=test, variables=["Rrs"],
 
 
 ```python
-plan.show_variables(open_method=test)
+plan.open_dataset(0, open_method=test)
 ```
 
     open_method: {'xarray_open': 'datatree', 'merge': ['/geophysical_data', '/navigation_data'], 'open_kwargs': {'chunks': {}, 'engine': 'h5netcdf', 'decode_timedelta': False}, 'coords': 'auto', 'set_coords': True, 'dim_renames': None, 'auto_align_phony_dims': None, 'merge_kwargs': {}}

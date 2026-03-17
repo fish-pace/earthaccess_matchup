@@ -3,8 +3,7 @@
 These profiles are plain dicts that can be passed directly to the
 ``open_method`` argument of :func:`~point_collocation.matchup`,
 :meth:`~point_collocation.Plan.open_dataset`,
-:meth:`~point_collocation.Plan.open_mfdataset`, and
-:meth:`~point_collocation.Plan.show_variables`.
+:meth:`~point_collocation.Plan.open_mfdataset`.
 
 Examples
 --------

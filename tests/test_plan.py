@@ -3694,6 +3694,114 @@ class TestPlanOpenDataset:
         assert "'xarray_open': 'datatree'" in captured.out
         assert "'merge': None" in captured.out
 
+    def test_open_dataset_prints_geolocation_line(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """open_dataset() prints a Geolocation line after the open_method spec."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(0, open_method={"open_kwargs": {"engine": "netcdf4"}})
+        ds.close()
+        captured = capsys.readouterr()
+        # First line is the open_method spec
+        assert captured.out.splitlines()[0].startswith("open_method:")
+        # Second line is the geolocation line
+        assert "Geolocation" in captured.out
+        assert "lon" in captured.out
+        assert "lat" in captured.out
+
+    def test_open_dataset_geolocation_respects_coords_dict(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """open_dataset() prints 'Geolocation specified' when coords dict is given."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(
+            0,
+            open_method={
+                "open_kwargs": {"engine": "netcdf4"},
+                "coords": {"lat": "lat", "lon": "lon"},
+            },
+        )
+        ds.close()
+        captured = capsys.readouterr()
+        assert "Geolocation specified" in captured.out
+
+    def test_open_dataset_silent_suppresses_geolocation(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """open_dataset(silent=True) does not print the geolocation line."""
+        nc_path = str(tmp_path / "test.nc")
+        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
+            nc_path, engine="netcdf4"
+        )
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        ds = p.open_dataset(0, open_method={"open_kwargs": {"engine": "netcdf4"}}, silent=True)
+        ds.close()
+        captured = capsys.readouterr()
+        assert "Geolocation" not in captured.out
+        assert "open_method" not in captured.out
+
 
 # ---------------------------------------------------------------------------
 # Helper: create a grouped NetCDF4 file (HDF5 with subgroups)
@@ -3727,6 +3835,56 @@ def _make_grouped_nc(path: str) -> None:
         lon_m.attrs["CLASS"] = np.bytes_("DIMENSION_SCALE")
         lon_m.attrs["NAME"] = np.bytes_("lon")
         monthly.create_dataset("sst", data=np.ones((3, 3), dtype=np.float32))
+
+
+def _make_pace_like_grouped_nc(path: str) -> None:
+    """Write a PACE OCI L2 AOP-like grouped HDF5 file for testing.
+
+    Root '/':              empty (no variables at root level)
+    Group '/geophysical_data': science variable ``Rrs`` with phony dims
+    Group '/navigation_data':  ``longitude``, ``latitude`` (2-D swath coords)
+                                plus extra 1-D edge coords ``slon``, ``elon``,
+                                ``slat``, ``elat`` that share the same CF
+                                ``standard_name`` — this triggers cf_xarray
+                                "ambiguous geolocation" detection.
+
+    This mimics the grouped structure that caused open_method='auto' to fail:
+    the flat dataset is empty so the dataset probe fails, AND the merged
+    DataTree has ambiguous lon/lat names so _apply_coords also fails on the
+    probe.  The fix is that the DataTree probe in _resolve_auto_spec no longer
+    calls _apply_coords — it only checks that the merged dataset is non-empty.
+    """
+    import h5py
+
+    n_lines, n_pixels = 4, 5
+
+    with h5py.File(path, "w") as h:
+        # /geophysical_data — science data only
+        geo = h.create_group("geophysical_data")
+        geo.create_dataset("Rrs", data=np.ones((n_lines, n_pixels), dtype=np.float32))
+
+        # /navigation_data — 2-D lat/lon plus 1-D edge coords
+        nav = h.create_group("navigation_data")
+        lon_2d = np.linspace(-120, -100, n_lines * n_pixels).reshape(n_lines, n_pixels).astype(np.float32)
+        lat_2d = np.linspace(30, 40, n_lines * n_pixels).reshape(n_lines, n_pixels).astype(np.float32)
+
+        lon_ds = nav.create_dataset("longitude", data=lon_2d)
+        lon_ds.attrs["standard_name"] = np.bytes_("longitude")
+        lon_ds.attrs["units"] = np.bytes_("degrees_east")
+
+        lat_ds = nav.create_dataset("latitude", data=lat_2d)
+        lat_ds.attrs["standard_name"] = np.bytes_("latitude")
+        lat_ds.attrs["units"] = np.bytes_("degrees_north")
+
+        # 1-D edge/center coords that share the same standard_name
+        for name, std_name, vals in [
+            ("slon", "longitude", np.linspace(-120, -100, n_lines).astype(np.float32)),
+            ("elon", "longitude", np.linspace(-119, -99, n_lines).astype(np.float32)),
+            ("slat", "latitude", np.linspace(30, 38, n_lines).astype(np.float32)),
+            ("elat", "latitude", np.linspace(32, 40, n_lines).astype(np.float32)),
+        ]:
+            ds_var = nav.create_dataset(name, data=vals)
+            ds_var.attrs["standard_name"] = np.bytes_(std_name)
 
 
 # ---------------------------------------------------------------------------
@@ -3846,12 +4004,19 @@ class TestDatasetMerge:
 
 
 # ---------------------------------------------------------------------------
-# Tests for show_variables (xarray path)
+# Tests for open_method="auto" fallback to datatree for PACE-like grouped files
 # ---------------------------------------------------------------------------
 
 
-class TestShowVariables:
-    """Tests for show_variables() using the xarray path (no h5py)."""
+class TestAutoOpenMethodDatatreeFallback:
+    """Test that open_method='auto' falls back to datatree (merge=None) for grouped
+    HDF5 files where the flat dataset is empty (root has no variables).
+
+    Regression test for the PACE OCI L2 AOP case where:
+    - xr.open_dataset → empty dataset (all vars in subgroups) → probe fails
+    - DataTree (merge=None) → has data in non-root nodes → probe succeeds
+    - Result is a raw DataTree; user must specify merge groups explicitly.
+    """
 
     def _make_plan(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, nc_path: str) -> Plan:
         mock_ea = MagicMock()
@@ -3869,186 +4034,43 @@ class TestShowVariables:
             time_buffer=pd.Timedelta(0),
         )
 
-    def test_show_variables_returns_none(
+    def test_open_dataset_auto_falls_back_to_datatree_for_pace_like_file(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """show_variables() returns None (print-only; use open_dataset for xarray repr)."""
-        nc_path = str(tmp_path / "flat.nc")
-        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
-            nc_path, engine="netcdf4"
-        )
+        """open_dataset(open_method='auto') returns a raw DataTree for grouped files
+        whose root is empty (like PACE OCI L2 AOP).  merge=None so the user can
+        inspect the groups and specify merge explicitly.
+        """
+        nc_path = str(tmp_path / "pace_like.nc")
+        _make_pace_like_grouped_nc(nc_path)
         p = self._make_plan(tmp_path, monkeypatch, nc_path)
-        assert p.show_variables() is None
 
-    def test_show_variables_flat_file_prints_dims_vars_geo(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """show_variables() for a flat NetCDF4 prints Dimensions, Variables, Geolocation."""
-        nc_path = str(tmp_path / "flat.nc")
-        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
-            nc_path, engine="netcdf4"
+        result = p.open_dataset(p[0], open_method="auto", silent=True)
+        # Should return a DataTree (not a flat Dataset) since root is empty
+        assert isinstance(result, xr.DataTree)
+        # The navigation_data node must be accessible via the DataTree's subtree
+        nav_node = next(
+            (node for node in result.subtree if node.name == "navigation_data"), None
         )
-        p = self._make_plan(tmp_path, monkeypatch, nc_path)
-        p.show_variables()
-        captured = capsys.readouterr()
-        assert "Dimensions" in captured.out
-        assert "Variables" in captured.out
-        assert "sst" in captured.out
-        assert "Geolocation" in captured.out
-        assert "lon" in captured.out
-        assert "Dataset Detail" not in captured.out
+        assert nav_node is not None, "Expected 'navigation_data' group in DataTree"
+        assert "longitude" in nav_node.ds.data_vars or "longitude" in nav_node.ds.coords
+        assert "latitude" in nav_node.ds.data_vars or "latitude" in nav_node.ds.coords
 
-    def test_show_variables_open_method_includes_merge_key(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
+    def test_open_dataset_auto_prints_datatree_spec_for_pace_like_file(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        """open_method line always includes 'merge' key, even when it is None."""
-        nc_path = str(tmp_path / "flat.nc")
-        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
-            nc_path, engine="netcdf4"
-        )
+        """open_method='auto' prints a resolved spec with xarray_open='datatree'
+        and merge=None for a grouped file.
+        """
+        nc_path = str(tmp_path / "pace_like.nc")
+        _make_pace_like_grouped_nc(nc_path)
         p = self._make_plan(tmp_path, monkeypatch, nc_path)
-        p.show_variables()
+
+        p.open_dataset(p[0], open_method="auto")
         captured = capsys.readouterr()
         first_line = captured.out.splitlines()[0]
-        assert first_line.startswith("open_method:")
-        assert "'merge'" in first_line
-
-    def test_show_variables_grouped_file_auto_mode_shows_root_group(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """show_variables() with grouped HDF5 in auto mode shows root group (no Group blocks).
-
-        In auto mode xarray opens only the root group, so subgroup variables
-        such as 'sst' are not listed. Users should pass
-        open_method='datatree-merge' to inspect all groups.
-        """
-        nc_path = str(tmp_path / "grouped.nc")
-        _make_grouped_nc(nc_path)
-        p = self._make_plan(tmp_path, monkeypatch, nc_path)
-        p.show_variables()
-        captured = capsys.readouterr()
-        # Per-group blocks are not printed
-        assert "Group /" not in captured.out
-        # Root group geolocation and summary lines are present
-        assert "Geolocation" in captured.out
-        assert "lon" in captured.out
-        assert "Dimensions:" in captured.out
-        assert "Variables:" in captured.out
-        # Dataset Detail section should NOT appear
-        assert "Dataset Detail" not in captured.out
-
-    def test_show_variables_coords_dict_detects_geolocation(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """show_variables() with coords={'lat': 'lat', 'lon': 'lon'} detects geolocation."""
-        nc_path = str(tmp_path / "grouped.nc")
-        _make_grouped_nc(nc_path)
-        p = self._make_plan(tmp_path, monkeypatch, nc_path)
-        open_method = {
-            "xarray_open": "dataset",
-            "merge": ["/", "/monthly"],
-            "open_kwargs": {"engine": "h5netcdf", "phony_dims": "sort"},
-            "coords": {"lat": "lat", "lon": "lon"},
-        }
-        p.show_variables(open_method=open_method)
-        captured = capsys.readouterr()
-        assert "Geolocation" in captured.out
-        # Should detect geolocation (not NONE) since lat and lon exist in the file
-        assert "NONE" not in captured.out
-
-
-class TestPlanShowVariables:
-    def test_show_variables_prints_dims_and_vars(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        nc_path = str(tmp_path / "test.nc")
-        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
-            nc_path, engine="netcdf4"
-        )
-        mock_ea = MagicMock()
-        mock_ea.open.return_value = [nc_path]
-        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
-
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[object()],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-
-        p.show_variables(open_method={"open_kwargs": {"engine": "netcdf4"}})
-        captured = capsys.readouterr()
-        assert "Dimensions" in captured.out
-        assert "Variables" in captured.out
-        assert "sst" in captured.out
-
-    def test_show_variables_raises_when_no_granules(self) -> None:
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-        with pytest.raises(ValueError, match="No granules"):
-            p.show_variables()
-
-    def test_show_variables_auto_prints_resolved_spec_not_auto(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """show_variables() with default auto mode prints the resolved spec, not 'auto'."""
-        nc_path = str(tmp_path / "flat.nc")
-        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
-            nc_path, engine="netcdf4"
-        )
-        mock_ea = MagicMock()
-        mock_ea.open.return_value = [nc_path]
-        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
-
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[object()],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-
-        p.show_variables()
-        captured = capsys.readouterr()
-        # Should show the resolved mode ("dataset"), not "auto"
-        assert "'xarray_open': 'dataset'" in captured.out
-        assert "'xarray_open': 'auto'" not in captured.out
+        assert "'xarray_open': 'datatree'" in first_line
+        assert "'merge': None" in first_line
 
 
 # ---------------------------------------------------------------------------
@@ -5682,9 +5704,122 @@ class TestNdpointSpatialMethod:
         assert not math.isnan(result.loc[0, "sst"])
         assert result.loc[0, "sst"] == pytest.approx(expected_sst, rel=1e-4)
 
+    def test_swath_nan_geoloc_old_xarray_raises_helpful_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When NaN pixels are found and xarray < 2026.2, a clear RuntimeError is raised."""
+        pytest.importorskip("scipy")
+        import importlib.metadata as _meta
+
+        monkeypatch.setattr(_meta, "version", lambda pkg: "2025.07.1" if pkg == "xarray" else "0")
+
+        import numpy as np
+        import xarray as xr
+        from point_collocation.core.engine import _drop_nan_geoloc
+
+        lat = np.array([[1.0, 2.0], [np.nan, np.nan]], dtype=np.float32)
+        lon = np.array([[10.0, 20.0], [np.nan, np.nan]], dtype=np.float32)
+        ds = xr.Dataset(
+            {"sst": (["r", "c"], np.ones((2, 2)))},
+            coords={"lat": (["r", "c"], lat), "lon": (["r", "c"], lon)},
+        )
+
+        with pytest.raises(RuntimeError, match="xarray"):
+            _drop_nan_geoloc(ds, "lat", "lon")
+
+    def test_drop_nan_geoloc_bbox_filter_reduces_pixel_count(self) -> None:
+        """_slice_2d_to_points removes out-of-bbox rows/cols even when NaN pixels exist."""
+        pytest.importorskip("scipy")
+        import numpy as np
+        import xarray as xr
+        from point_collocation.core.engine import _slice_2d_to_points
+
+        # 4x4 swath: last row is NaN (fill values).  Rows 0-2 span a wide area.
+        # Row 1 uses lon values close to 0 so a tight bbox around (0, 0) can
+        # select only those pixels.
+        lat = np.array([
+            [5.0, 5.0, 5.0, 5.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [-5.0, -5.0, -5.0, -5.0],
+            [np.nan, np.nan, np.nan, np.nan],
+        ], dtype=np.float32)
+        lon = np.array([
+            [-30.0, -10.0, 10.0, 30.0],
+            [-0.5,  -0.2,  0.2,  0.5],   # all within ±1° of lon=0
+            [-30.0, -10.0, 10.0, 30.0],
+            [np.nan, np.nan, np.nan, np.nan],
+        ], dtype=np.float32)
+        ds = xr.Dataset(
+            {"sst": (["r", "c"], np.ones((4, 4)))},
+            coords={"lat": (["r", "c"], lat), "lon": (["r", "c"], lon)},
+        )
+
+        # Without bbox filter: full dataset unchanged.
+        result_full = ds
+        assert result_full.sizes["r"] == 4
+
+        # With bbox filter centred on (0, 0) with 1° pad: only row 1 survives
+        # (rows 0 and 2 have lon values ±10° or more, row 3 is all NaN).
+        result_bbox = _slice_2d_to_points(ds, [0.0], [0.0], "lat", "lon")
+        assert result_bbox.sizes["r"] < 4
+        # Every kept row must have at least one pixel within bbox lat/lon.
+        kept_lats = result_bbox.coords["lat"].values
+        kept_lons = result_bbox.coords["lon"].values
+        # row 1 is within bbox (lat=0, lon ∈ {-0.5, -0.2, 0.2, 0.5})
+        assert np.any(np.abs(kept_lats) <= 1.0)
+        assert np.any(np.abs(kept_lons) <= 1.0)
+
+    def test_slice_2d_to_points_reduces_pixel_count(self) -> None:
+        """_slice_2d_to_points filters 2-D swath rows/cols to the query bbox."""
+        import numpy as np
+        import xarray as xr
+        from point_collocation.core.engine import _slice_2d_to_points
+
+        # 5×4 swath: rows 0 and 4 span high/low latitudes far from the query.
+        # Only row 2 (lat=0) and its neighbours should survive a bbox at (0, 0).
+        lat = np.array([
+            [80.0, 80.0, 80.0, 80.0],
+            [5.0,  5.0,  5.0,  5.0],
+            [0.0,  0.0,  0.0,  0.0],
+            [-5.0, -5.0, -5.0, -5.0],
+            [-80.0, -80.0, -80.0, -80.0],
+        ], dtype=np.float32)
+        lon = np.array([
+            [-30.0, -10.0, 10.0, 30.0],
+            [-0.5,  -0.2,  0.2,  0.5],
+            [-0.5,  -0.2,  0.2,  0.5],
+            [-0.5,  -0.2,  0.2,  0.5],
+            [-30.0, -10.0, 10.0, 30.0],
+        ], dtype=np.float32)
+        ds = xr.Dataset(
+            {"sst": (["r", "c"], np.ones((5, 4)))},
+            coords={"lat": (["r", "c"], lat), "lon": (["r", "c"], lon)},
+        )
+
+        # With default 1° pad around (0, 0): rows 0 and 4 are far outside.
+        result = _slice_2d_to_points(ds, [0.0], [0.0], "lat", "lon")
+        assert result.sizes["r"] < 5  # Some rows were dropped.
+        assert result.sizes["c"] == 4  # All cols are within lon bbox.
+
+        # The extreme rows (lat=80 and lat=-80) must be gone.
+        remaining_lats = result.coords["lat"].values
+        assert not np.any(np.abs(remaining_lats) > 10.0)
+
+    def test_slice_2d_to_points_leaves_1d_unchanged(self) -> None:
+        """_slice_2d_to_points must not touch datasets with 1-D coordinates."""
+        import numpy as np
+        import xarray as xr
+        from point_collocation.core.engine import _slice_2d_to_points
+
+        ds = xr.Dataset(
+            {"sst": (["lat", "lon"], np.ones((5, 4)))},
+            coords={"lat": np.linspace(-80, 80, 5), "lon": np.linspace(-30, 30, 4)},
+        )
+        result = _slice_2d_to_points(ds, [0.0], [0.0], "lat", "lon")
+        assert result.identical(ds)
+
 
 class TestAutoSpatialMethod:
-    """Tests for spatial_method='auto' (default): dim-based routing + nearest→ndpoint fallback."""
 
     def _make_granule_meta(self) -> "GranuleMeta":
         return GranuleMeta(
@@ -6015,79 +6150,6 @@ class TestAutoSpatialMethod:
         )
         assert "sst" in result.columns
         assert not math.isnan(result.loc[0, "sst"])
-
-
-class TestShowVariablesLayout:
-    """Tests for plan.show_variables() with both open methods."""
-
-    def test_show_variables_dataset_layout_prints_dims_and_vars(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """show_variables() prints dims, vars, and geo info."""
-        nc_path = str(tmp_path / "test.nc")
-        _make_l3_dataset([-90.0, 0.0, 90.0], [-180.0, 0.0, 180.0]).to_netcdf(
-            nc_path, engine="netcdf4"
-        )
-        mock_ea = MagicMock()
-        mock_ea.open.return_value = [nc_path]
-        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
-
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[object()],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-
-        p.show_variables(open_method={"open_kwargs": {"engine": "netcdf4"}})
-        captured = capsys.readouterr()
-        assert "Dimensions" in captured.out
-        assert "Variables" in captured.out
-        assert "sst" in captured.out
-        assert "Geolocation" in captured.out
-        assert "'lon'" in captured.out or "lon" in captured.out
-
-    def test_show_variables_geo_detection_none_warns(
-        self,
-        tmp_path: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """show_variables prints a message when no geolocation is detected."""
-        nc_path = str(tmp_path / "no_geo.nc")
-        # Dataset with no recognisable lat/lon names.
-        xr.Dataset(
-            {"temperature": (["x", "y"], [[1.0, 2.0], [3.0, 4.0]])},
-            coords={"x": [0, 1], "y": [0, 1]},
-        ).to_netcdf(nc_path, engine="netcdf4")
-
-        mock_ea = MagicMock()
-        mock_ea.open.return_value = [nc_path]
-        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
-
-        pts = pd.DataFrame(
-            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
-        )
-        p = Plan(
-            points=pts,
-            results=[object()],
-            granules=[],
-            point_granule_map={0: []},
-            source_kwargs={"short_name": "TEST"},
-            time_buffer=pd.Timedelta(0),
-        )
-
-        p.show_variables(open_method={"open_kwargs": {"engine": "netcdf4"}})
-        captured = capsys.readouterr()
-        assert "NONE" in captured.out or "no geolocation" in captured.out.lower()
 
 
 # ---------------------------------------------------------------------------

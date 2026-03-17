@@ -65,7 +65,8 @@ plan = pc.plan(
 )
 
 # Inspect available variables before running the full matchup.
-plan.show_variables()
+ds = plan.open_dataset(0)
+ds.close()
 
 # ---------------------------------------------------------------------------
 # 3. Run matchup.

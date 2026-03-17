@@ -209,7 +209,7 @@ This will open one file and show us the variables. We want 'Rrs' in this case.
 
 
 ```python
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     geometry     : 'grid'
