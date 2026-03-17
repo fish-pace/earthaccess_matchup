@@ -437,7 +437,7 @@ plan.summary()
 
 
 ```python
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     geometry     : 'grid'
@@ -1157,7 +1157,7 @@ plan.summary()
 
 
 ```python
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     geometry     : 'grid'
@@ -1633,7 +1633,7 @@ plan.summary()
 
 
 ```python
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     geometry     : 'grid'
@@ -2091,7 +2091,7 @@ plan.summary()
 
 
 ```python
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     geometry     : 'grid'

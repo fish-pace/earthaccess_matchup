@@ -660,7 +660,7 @@ def _open_and_merge_dataset_groups(
 
 
 # ---------------------------------------------------------------------------
-# h5py-based file structure inspection (for show_variables)
+# h5py-based file structure inspection
 # ---------------------------------------------------------------------------
 
 

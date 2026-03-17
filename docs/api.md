@@ -37,7 +37,6 @@ pc.matchup(...)  # execute the plan
     options:
       members:
         - summary
-        - show_variables
         - open_dataset
         - open_mfdataset
 

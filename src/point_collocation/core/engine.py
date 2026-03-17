@@ -649,7 +649,7 @@ def _execute_plan(
                                 f"open_method={spec['xarray_open']!r}, "
                                 f"spatial_method={spatial_method!r}. "
                                 f"Available variables: {avail}. "
-                                "Use plan.show_variables() to inspect the dataset."
+                                "Use plan.open_dataset(0) to inspect the dataset."
                             )
 
                         # For xoak/ndpoint with 1-D (gridded) lat/lon, pre-slice the dataset

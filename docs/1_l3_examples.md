@@ -54,7 +54,7 @@ plan = pc.plan(
 ```python
 %%time
 # 359 ms
-plan.show_variables()
+plan.open_dataset(0)
 ```
 
     open_method  : 'auto'
@@ -635,7 +635,7 @@ for short_name in short_names:
                 "granule_name":"*.DAY.*",
              }
         )
-        plan.show_variables()
+        plan.open_dataset(0)
     except Exception as e:
         print("Failed:", e)
 ```
