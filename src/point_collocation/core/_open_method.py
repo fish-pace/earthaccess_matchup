@@ -795,7 +795,7 @@ def _merge_datatree_with_spec(dt: object, spec: dict) -> xr.Dataset:
     xr.Dataset
         Merged flat dataset.
     """
-    merge = spec.get("merge") or "all"
+    merge = spec.get("merge", "all")
     merge_kwargs: dict = spec.get("merge_kwargs", {})
     dim_renames = spec.get("dim_renames", None)
     auto_align_phony_dims = spec.get("auto_align_phony_dims", None)
@@ -1091,9 +1091,16 @@ def _open_as_flat_dataset(
                     ds_simple.close()
 
     elif xarray_open == "datatree":
+        merge = spec.get("merge")
         dt = _open_datatree_fn(file_obj, effective_kwargs)
         try:
-            ds = _merge_datatree_with_spec(dt, spec)
+            if merge is None:
+                # No merge requested — use the root dataset directly.
+                # For flat NetCDF files opened as DataTree the root node
+                # contains all variables, so this path works without merging.
+                ds = getattr(dt, "ds", xr.Dataset())
+            else:
+                ds = _merge_datatree_with_spec(dt, spec)
             ds, lon_name, lat_name = _apply_coords(ds, spec)
             yield (ds, lon_name, lat_name)
         finally:
