@@ -3729,6 +3729,56 @@ def _make_grouped_nc(path: str) -> None:
         monthly.create_dataset("sst", data=np.ones((3, 3), dtype=np.float32))
 
 
+def _make_pace_like_grouped_nc(path: str) -> None:
+    """Write a PACE OCI L2 AOP-like grouped HDF5 file for testing.
+
+    Root '/':              empty (no variables at root level)
+    Group '/geophysical_data': science variable ``Rrs`` with phony dims
+    Group '/navigation_data':  ``longitude``, ``latitude`` (2-D swath coords)
+                                plus extra 1-D edge coords ``slon``, ``elon``,
+                                ``slat``, ``elat`` that share the same CF
+                                ``standard_name`` — this triggers cf_xarray
+                                "ambiguous geolocation" detection.
+
+    This mimics the grouped structure that caused open_method='auto' to fail:
+    the flat dataset is empty so the dataset probe fails, AND the merged
+    DataTree has ambiguous lon/lat names so _apply_coords also fails on the
+    probe.  The fix is that the DataTree probe in _resolve_auto_spec no longer
+    calls _apply_coords — it only checks that the merged dataset is non-empty.
+    """
+    import h5py
+
+    n_lines, n_pixels = 4, 5
+
+    with h5py.File(path, "w") as h:
+        # /geophysical_data — science data only
+        geo = h.create_group("geophysical_data")
+        geo.create_dataset("Rrs", data=np.ones((n_lines, n_pixels), dtype=np.float32))
+
+        # /navigation_data — 2-D lat/lon plus 1-D edge coords
+        nav = h.create_group("navigation_data")
+        lon_2d = np.linspace(-120, -100, n_lines * n_pixels).reshape(n_lines, n_pixels).astype(np.float32)
+        lat_2d = np.linspace(30, 40, n_lines * n_pixels).reshape(n_lines, n_pixels).astype(np.float32)
+
+        lon_ds = nav.create_dataset("longitude", data=lon_2d)
+        lon_ds.attrs["standard_name"] = np.bytes_("longitude")
+        lon_ds.attrs["units"] = np.bytes_("degrees_east")
+
+        lat_ds = nav.create_dataset("latitude", data=lat_2d)
+        lat_ds.attrs["standard_name"] = np.bytes_("latitude")
+        lat_ds.attrs["units"] = np.bytes_("degrees_north")
+
+        # 1-D edge/center coords that share the same standard_name
+        for name, std_name, vals in [
+            ("slon", "longitude", np.linspace(-120, -100, n_lines).astype(np.float32)),
+            ("elon", "longitude", np.linspace(-119, -99, n_lines).astype(np.float32)),
+            ("slat", "latitude", np.linspace(30, 38, n_lines).astype(np.float32)),
+            ("elat", "latitude", np.linspace(32, 40, n_lines).astype(np.float32)),
+        ]:
+            ds_var = nav.create_dataset(name, data=vals)
+            ds_var.attrs["standard_name"] = np.bytes_(std_name)
+
+
 # ---------------------------------------------------------------------------
 # Tests for dataset-based merge (Task 1) and merge_kwargs (Task 2)
 # ---------------------------------------------------------------------------
@@ -3843,6 +3893,70 @@ class TestDatasetMerge:
         # Computing dask arrays must not raise RuntimeError: file closed
         sst_values = ds["sst"].values
         assert sst_values is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests for open_method="auto" fallback to datatree for PACE-like grouped files
+# ---------------------------------------------------------------------------
+
+
+class TestAutoOpenMethodDatatreeFallback:
+    """Test that open_method='auto' falls back to datatree-merge for grouped
+    HDF5 files where the flat dataset is empty (root has no variables).
+
+    Regression test for the PACE OCI L2 AOP case where:
+    - xr.open_dataset → empty dataset (all vars in subgroups) → probe fails
+    - DataTree merge → non-empty dataset → probe succeeds → datatree used
+    """
+
+    def _make_plan(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, nc_path: str) -> Plan:
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        return Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+    def test_open_dataset_auto_falls_back_to_datatree_for_pace_like_file(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_dataset(open_method='auto') uses datatree-merge for grouped files
+        whose root is empty (like PACE OCI L2 AOP).
+        """
+        nc_path = str(tmp_path / "pace_like.nc")
+        _make_pace_like_grouped_nc(nc_path)
+        p = self._make_plan(tmp_path, monkeypatch, nc_path)
+
+        ds = p.open_dataset(p[0], open_method="auto", silent=True)
+        assert isinstance(ds, xr.Dataset)
+        # The merged dataset must contain the science variable and navigation vars
+        assert "Rrs" in ds.data_vars or "Rrs" in ds
+        assert "longitude" in ds.data_vars or "longitude" in ds.coords
+        assert "latitude" in ds.data_vars or "latitude" in ds.coords
+
+    def test_open_dataset_auto_prints_datatree_spec_for_pace_like_file(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """open_method='auto' prints a resolved spec with xarray_open='datatree'
+        for a grouped file, not 'dataset' or 'auto'.
+        """
+        nc_path = str(tmp_path / "pace_like.nc")
+        _make_pace_like_grouped_nc(nc_path)
+        p = self._make_plan(tmp_path, monkeypatch, nc_path)
+
+        p.open_dataset(p[0], open_method="auto")
+        captured = capsys.readouterr()
+        first_line = captured.out.splitlines()[0]
+        assert "'xarray_open': 'datatree'" in first_line
+        assert "merge" in first_line
 
 
 # ---------------------------------------------------------------------------

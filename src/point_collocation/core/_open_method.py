@@ -929,6 +929,10 @@ def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
     _seek_back()
 
     # --- Try the DataTree path ---
+    # We only need the merged dataset to be non-empty — we don't require
+    # lat/lon to be unambiguously identifiable here, because the caller
+    # (plan.open_dataset / matchup engine) handles coordinate resolution
+    # separately with its own error handling.
     datatree_spec: dict = {
         **spec,
         "xarray_open": "datatree",
@@ -940,7 +944,11 @@ def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
         dt = _open_datatree_fn(file_obj, effective_kwargs)
         try:
             ds = _merge_datatree_with_spec(dt, datatree_spec)
-            _apply_coords(ds, datatree_spec)
+            if not ds.data_vars and not ds.coords and not ds.dims:
+                raise ValueError(
+                    "DataTree merge produced an empty dataset (no variables, "
+                    "coordinates, or dimensions)."
+                )
         finally:
             if hasattr(dt, "close"):
                 dt.close()
@@ -950,11 +958,11 @@ def _resolve_auto_spec(file_obj: object, spec: dict) -> dict:
         datatree_error = exc
 
     raise ValueError(
-        "open_method='auto' failed to identify lat/lon coordinates via both "
-        "the dataset and DataTree paths.\n"
+        "open_method='auto' failed to open the granule via both "
+        "the flat-dataset and DataTree paths.\n"
         f"  Dataset attempt: {dataset_error!s}\n"
         f"  DataTree attempt: {datatree_error!s}\n"
-        "Specify open_method='datatree-merge' or a dict spec with explicit coords."
+        "Specify open_method='datatree-merge' or a dict spec to diagnose further."
     ) from datatree_error
 
 

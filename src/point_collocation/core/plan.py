@@ -282,15 +282,13 @@ class Plan:
 
         # For "auto" mode, probe the file first so that the printed spec shows
         # the actual resolved mode (e.g. "dataset" or "datatree"), not "auto".
+        # Any ValueError from _resolve_auto_spec (both probes failed) is
+        # propagated to the caller rather than silently downgrading to an
+        # empty-dataset fallback.
         if xarray_open == "auto":
-            try:
-                spec = _resolve_auto_spec(file_obj, spec)
-                xarray_open = spec["xarray_open"]
-                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
-            except ValueError:
-                xarray_open = "dataset"
-                spec = {**spec, "xarray_open": "dataset", "merge": None}
-                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+            spec = _resolve_auto_spec(file_obj, spec)
+            xarray_open = spec["xarray_open"]
+            effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
 
         if not silent:
             display_spec = {**spec, "open_kwargs": effective_kwargs}
@@ -504,15 +502,11 @@ class Plan:
 
         # For "auto" mode, probe the file first so the printed spec shows the
         # actual resolved mode (e.g. "dataset"), not "auto".
+        # Any ValueError from _resolve_auto_spec is propagated to the caller.
         if xarray_open == "auto":
-            try:
-                spec = _resolve_auto_spec(file_obj, spec)
-                xarray_open = spec["xarray_open"]
-                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
-            except ValueError:
-                xarray_open = "dataset"
-                spec = {**spec, "xarray_open": "dataset", "merge": None}
-                effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
+            spec = _resolve_auto_spec(file_obj, spec)
+            xarray_open = spec["xarray_open"]
+            effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
 
         # Print the spec summary.  Ensure "merge" is always present so the
         # printed spec is unambiguous (it may be absent for the "auto" preset).
