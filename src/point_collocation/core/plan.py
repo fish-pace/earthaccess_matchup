@@ -521,11 +521,23 @@ class Plan:
         merge = spec.get("merge")
         if xarray_open == "datatree":
             dt = _open_datatree_fn(file_obj, effective_kwargs)
-            # For show_variables, always merge all groups for display — even
-            # when merge=None (raw DataTree mode) — so the user can see every
-            # variable in every group.
-            display_merge_spec = {**spec, "merge": merge if merge is not None else "all"}
-            ds_flat = _merge_datatree_with_spec(dt, display_merge_spec)
+            if merge is None:
+                # Raw DataTree mode — respect the merge=None setting.
+                # List the available groups so the user knows what to pass.
+                groups = [
+                    node.path
+                    for node in dt.subtree  # type: ignore[union-attr]
+                    if node.path != "/"
+                ]
+                print(
+                    "\nGroups available (merge=None):\n  "
+                    + "\n  ".join(groups or ["(none)"])
+                    + "\n\nSet merge to a list of group paths to inspect variables, e.g.\n"
+                    "  open_method={'xarray_open': 'datatree', "
+                    "'merge': ['" + (groups[0] if groups else "group") + "', ...]}"
+                )
+                return
+            ds_flat = _merge_datatree_with_spec(dt, spec)
         elif xarray_open == "dataset" and merge is not None:
             ds_flat = _open_and_merge_dataset_groups(file_obj, spec, effective_kwargs)
         else:
@@ -533,6 +545,14 @@ class Plan:
 
         print(f"\nDimensions: {dict(ds_flat.sizes)}")
         print(f"\nVariables: {list(ds_flat.data_vars)}")
+
+        if not ds_flat.data_vars:
+            print(
+                "\nNo data variables found with the current open_method settings. "
+                "If this is a grouped file, set merge to a list of group paths, e.g.\n"
+                "  open_method={'xarray_open': 'datatree', 'merge': ['group1', 'group2']}"
+            )
+            return
 
         # Geolocation detection results.
         try:

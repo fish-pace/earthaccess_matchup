@@ -3964,6 +3964,27 @@ class TestAutoOpenMethodDatatreeFallback:
         assert "'xarray_open': 'datatree'" in first_line
         assert "'merge': None" in first_line
 
+    def test_show_variables_auto_pace_like_prints_groups(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """show_variables(open_method='auto') for a PACE-like grouped file prints
+        available groups and a hint to set merge — does NOT override to merge='all'.
+        """
+        nc_path = str(tmp_path / "pace_like.nc")
+        _make_pace_like_grouped_nc(nc_path)
+        p = self._make_plan(tmp_path, monkeypatch, nc_path)
+
+        p.show_variables(open_method="auto")
+        captured = capsys.readouterr()
+        # Spec line must show datatree + merge=None
+        first_line = captured.out.splitlines()[0]
+        assert "'xarray_open': 'datatree'" in first_line
+        assert "'merge': None" in first_line
+        # Groups must be listed
+        assert "Groups available" in captured.out
+        # Hint to set merge must appear
+        assert "merge" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # Tests for show_variables (xarray path)
@@ -4045,11 +4066,13 @@ class TestShowVariables:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """show_variables() with grouped HDF5 in auto mode shows root group (no Group blocks).
+        """show_variables() with a grouped HDF5 in auto mode respects merge=None.
 
-        In auto mode xarray opens only the root group, so subgroup variables
-        such as 'sst' are not listed. Users should pass
-        open_method='datatree-merge' to inspect all groups.
+        The auto probe finds lat/lon at the root group → resolves to
+        xarray_open='dataset', merge=None.  Dimensions and Geolocation from
+        the root group are printed.  Because the root has no data variables
+        (only dimension-scale coordinates), a note about setting merge is
+        also printed, but no early exit — Geolocation is still shown.
         """
         nc_path = str(tmp_path / "grouped.nc")
         _make_grouped_nc(nc_path)
