@@ -5412,6 +5412,197 @@ class TestMissingNdpoint:
             pc.matchup(p, spatial_method="ndpoint")
 
 
+class TestMissingHaversine:
+    """Test that missing xoak raises a clear ImportError for spatial_method='haversine'."""
+
+    def test_haversine_import_error_raised_early(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """matchup() raises ImportError for haversine before opening any granule."""
+        import sys
+
+        # Block the xoak.tree_adapters submodule import.
+        for key in list(sys.modules.keys()):
+            if key == "xoak" or key.startswith("xoak."):
+                monkeypatch.delitem(sys.modules, key)
+        monkeypatch.setitem(sys.modules, "xoak", None)  # type: ignore[assignment]
+        monkeypatch.setitem(sys.modules, "xoak.tree_adapters", None)  # type: ignore[assignment]
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01"])}
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[],
+            point_granule_map={0: []},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        with pytest.raises(ImportError, match="xoak"):
+            pc.matchup(p, spatial_method="haversine")
+
+
+class TestHaversineSpatialMethod:
+    """Tests for spatial_method='haversine' (xoak SklearnGeoBallTreeAdapter)."""
+
+    def test_swath_matchup_returns_nearest_value(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swath matchup using haversine returns the nearest pixel value."""
+        pytest.importorskip("xoak")  # skip if xoak not installed
+
+        nc_path = str(tmp_path / "swath.nc")
+        ds_swath = _make_l2_swath_dataset(nrows=4, ncols=5, seed=42)
+        ds_swath.to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        # Use the first lat/lon value from the swath as the query point.
+        lat_val = float(ds_swath["lat"].values[0, 0])
+        lon_val = float(ds_swath["lon"].values[0, 0])
+
+        pts = pd.DataFrame(
+            {
+                "lat": [lat_val],
+                "lon": [lon_val],
+                "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+            }
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/swath.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            open_method="datatree-merge",
+            variables=["sst"],
+            spatial_method="haversine",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "sst" in result.columns
+        assert len(result) == 1
+        assert not math.isnan(result.loc[0, "sst"])
+
+    def test_haversine_returns_same_value_as_xoak_for_normal_latitudes(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """haversine and xoak return the same nearest value for points at normal latitudes."""
+        pytest.importorskip("xoak")  # skip if xoak not installed
+
+        nc_path = str(tmp_path / "swath.nc")
+        ds_swath = _make_l2_swath_dataset(nrows=4, ncols=5, seed=99)
+        ds_swath.to_netcdf(nc_path, engine="netcdf4")
+
+        def make_plan() -> "Plan":
+            mock_ea = MagicMock()
+            mock_ea.open.return_value = [nc_path]
+            monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+            lat_val = float(ds_swath["lat"].values[1, 2])
+            lon_val = float(ds_swath["lon"].values[1, 2])
+            pts = pd.DataFrame(
+                {
+                    "lat": [lat_val],
+                    "lon": [lon_val],
+                    "time": pd.to_datetime(["2023-06-01T12:00:00"]),
+                }
+            )
+            gm = GranuleMeta(
+                granule_id="https://example.com/swath.nc",
+                begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+                end=pd.Timestamp("2023-06-01T23:59:59Z"),
+                bbox=(-180.0, -90.0, 180.0, 90.0),
+                result_index=0,
+            )
+            return Plan(
+                points=pts,
+                results=[object()],
+                granules=[gm],
+                point_granule_map={0: [0]},
+                source_kwargs={"short_name": "TEST"},
+                time_buffer=pd.Timedelta(0),
+            )
+
+        result_xoak = pc.matchup(
+            make_plan(),
+            open_method="datatree-merge",
+            variables=["sst"],
+            spatial_method="xoak",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+        result_haversine = pc.matchup(
+            make_plan(),
+            open_method="datatree-merge",
+            variables=["sst"],
+            spatial_method="haversine",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert result_xoak.loc[0, "sst"] == pytest.approx(result_haversine.loc[0, "sst"])
+
+    def test_grid_matchup_returns_nearest_value(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open_method='dataset' + spatial_method='haversine' returns the nearest grid value."""
+        pytest.importorskip("xoak")  # skip if xoak not installed
+
+        lats = [-1.0, 0.0, 1.0]
+        lons = [-1.0, 0.0, 1.0]
+        nc_path = str(tmp_path / "grid.nc")
+        _make_l3_dataset(lats, lons, seed=7).to_netcdf(nc_path, engine="netcdf4")
+
+        mock_ea = MagicMock()
+        mock_ea.open.return_value = [nc_path]
+        monkeypatch.setitem(__import__("sys").modules, "earthaccess", mock_ea)
+
+        pts = pd.DataFrame(
+            {"lat": [0.0], "lon": [0.0], "time": pd.to_datetime(["2023-06-01T12:00:00"])}
+        )
+        gm = GranuleMeta(
+            granule_id="https://example.com/grid.nc",
+            begin=pd.Timestamp("2023-06-01T00:00:00Z"),
+            end=pd.Timestamp("2023-06-01T23:59:59Z"),
+            bbox=(-1.0, -1.0, 1.0, 1.0),
+            result_index=0,
+        )
+        p = Plan(
+            points=pts,
+            results=[object()],
+            granules=[gm],
+            point_granule_map={0: [0]},
+            source_kwargs={"short_name": "TEST"},
+            time_buffer=pd.Timedelta(0),
+        )
+
+        result = pc.matchup(
+            p,
+            open_method="dataset",
+            variables=["sst"],
+            spatial_method="haversine",
+            open_dataset_kwargs={"engine": "netcdf4"},
+        )
+
+        assert "sst" in result.columns
+        assert len(result) == 1
+        assert not math.isnan(result.loc[0, "sst"])
+
+
 class TestNdpointSpatialMethod:
     """Tests for spatial_method='ndpoint' (xarray built-in NDPointIndex with scipy)."""
 

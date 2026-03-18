@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 # Re-export geolocation pairs for callers that import them from this module.
 from point_collocation.core._open_method import _GEOLOC_PAIRS  # noqa: F401
 
-_VALID_SPATIAL_METHODS = {"nearest", "xoak", "ndpoint", "auto"}
+_VALID_SPATIAL_METHODS = {"nearest", "xoak", "ndpoint", "auto", "haversine"}
 
 # Time dimension names used as a fallback when cf_xarray is not installed or
 # when the dataset lacks CF-convention axis/units attributes.  Tried in order.
@@ -146,6 +146,14 @@ def matchup(
         * ``"xoak"`` — the ``xoak`` package's ``SklearnKDTreeAdapter``.
           Works with both 1-D and 2-D arrays (requires ``xoak`` and
           ``scikit-learn``).
+        * ``"haversine"`` — the ``xoak`` package's
+          ``SklearnGeoBallTreeAdapter``, which uses the haversine metric for
+          accurate great-circle distance calculations.  Recommended for data
+          near the poles where the Euclidean k-d tree used by ``"xoak"`` can
+          return incorrect nearest neighbours due to coordinate distortion.
+          Works with both 1-D and 2-D arrays (requires ``xoak`` and
+          ``scikit-learn``).  Lat/lon values are passed in degrees; the
+          adapter converts them to radians internally.
     open_dataset_kwargs:
         Optional dictionary of keyword arguments forwarded to the xarray
         open function for every granule opened during the run.  These
@@ -230,6 +238,9 @@ def matchup(
         If ``spatial_method="xoak"`` and the ``xoak`` package is not
         installed.
     ImportError
+        If ``spatial_method="haversine"`` and the ``xoak`` package is not
+        installed.
+    ImportError
         If ``spatial_method="ndpoint"`` and ``scipy`` is not installed.
     """
     if granule_range is not None:
@@ -262,6 +273,16 @@ def matchup(
         except ImportError as exc:
             raise ImportError(
                 "The 'xoak' package (and scikit-learn) are required for spatial_method='xoak'. "
+                "Install them with: pip install xoak scikit-learn"
+            ) from exc
+
+    # Validate xoak is importable before we start processing granules.
+    if spatial_method == "haversine":
+        try:
+            from xoak.tree_adapters import SklearnGeoBallTreeAdapter  # type: ignore[import-untyped]  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "The 'xoak' package (and scikit-learn) are required for spatial_method='haversine'. "
                 "Install them with: pip install xoak scikit-learn"
             ) from exc
 
@@ -402,8 +423,9 @@ def _check_spatial_compat(
 
     Only validates for ``spatial_method="nearest"``, which requires 1-D
     coordinate arrays.  ``spatial_method="xoak"``,
-    ``spatial_method="ndpoint"``, and ``spatial_method="auto"`` work with
-    both 1-D and 2-D arrays and are not validated here.
+    ``spatial_method="haversine"``, ``spatial_method="ndpoint"``, and
+    ``spatial_method="auto"`` work with both 1-D and 2-D arrays and are not
+    validated here.
 
     Uses only metadata (``dims``) — does **not** load array data.
     """
@@ -652,13 +674,13 @@ def _execute_plan(
                                 "Use plan.open_dataset(0) to inspect the dataset."
                             )
 
-                        # For xoak/ndpoint with 1-D (gridded) lat/lon, pre-slice the dataset
+                        # For xoak/haversine/ndpoint with 1-D (gridded) lat/lon, pre-slice the dataset
                         # to the spatial extent of the query points before building
                         # the k-d tree.  A global granule with only a few scattered
                         # points would otherwise cause the index to cover the entire global
                         # grid, which is very slow.  Skip this step for "nearest" (1-D)
                         # since it does not build an index.
-                        if effective_spatial in ("xoak", "ndpoint"):
+                        if effective_spatial in ("xoak", "haversine", "ndpoint"):
                             lat_var = ds.coords[lat_name] if lat_name in ds.coords else ds[lat_name]
                             if lat_var.ndim == 1:
                                 pt_lats = [float(plan.points.loc[idx]["lat"]) for idx in pt_indices]
@@ -674,7 +696,7 @@ def _execute_plan(
                         # extraction functions can handle (time, lat, lon) variables.
                         time_dim = _find_time_dim(ds)
 
-                        if effective_spatial in ("xoak", "ndpoint"):
+                        if effective_spatial in ("xoak", "haversine", "ndpoint"):
                             # Build the k-d tree index once for all points in this
                             # granule instead of rebuilding it per point.  This
                             # dramatically reduces memory pressure and speeds up
@@ -689,6 +711,8 @@ def _execute_plan(
                                 rows_for_granule.append(row)
                             if effective_spatial == "xoak":
                                 _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name, time_dim)
+                            elif effective_spatial == "haversine":
+                                _extract_xoak_batch(ds, rows_for_granule, variables, lon_name, lat_name, time_dim, use_haversine=True)
                             else:
                                 _extract_ndpoint_batch(ds, rows_for_granule, variables, lon_name, lat_name, time_dim)
                             output_rows.extend(rows_for_granule)
@@ -1235,6 +1259,8 @@ def _extract_xoak_batch(
     lon_name: str,
     lat_name: str,
     time_dim: str | None = None,
+    *,
+    use_haversine: bool = False,
 ) -> None:
     """Extract values for all *rows* using a single xoak k-d tree index.
 
@@ -1244,7 +1270,8 @@ def _extract_xoak_batch(
     peak memory when a granule has many query points.
 
     Uses the ``xarray.indexes.NDPointIndex`` API with xoak's
-    ``SklearnKDTreeAdapter``.
+    ``SklearnKDTreeAdapter`` by default, or ``SklearnGeoBallTreeAdapter``
+    when *use_haversine* is ``True`` (i.e. ``spatial_method="haversine"``).
 
     Modifies each dict in *rows* in-place.
 
@@ -1255,14 +1282,26 @@ def _extract_xoak_batch(
         :func:`_find_time_dim`.  When not ``None``, each variable is
         squeezed or nearest-selected along this dimension after spatial
         selection so that the result is always free of the time axis.
+    use_haversine:
+        When ``True``, use ``SklearnGeoBallTreeAdapter`` (haversine metric)
+        instead of ``SklearnKDTreeAdapter`` (Euclidean metric).
     """
-    try:
-        from xoak.tree_adapters import SklearnKDTreeAdapter  # type: ignore[import-untyped]
-    except ImportError as exc:
-        raise ImportError(
-            "The 'xoak' package is required for spatial_method='xoak'. "
-            "Install it with: pip install xoak scikit-learn"
-        ) from exc
+    if use_haversine:
+        try:
+            from xoak.tree_adapters import SklearnGeoBallTreeAdapter as _TreeAdapter  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "The 'xoak' package is required for spatial_method='haversine'. "
+                "Install it with: pip install xoak scikit-learn"
+            ) from exc
+    else:
+        try:
+            from xoak.tree_adapters import SklearnKDTreeAdapter as _TreeAdapter  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "The 'xoak' package is required for spatial_method='xoak'. "
+                "Install it with: pip install xoak scikit-learn"
+            ) from exc
 
     if not rows:
         return
@@ -1303,7 +1342,7 @@ def _extract_xoak_batch(
     indexed_ds = ds_work.set_xindex(
         [lat_name, lon_name],
         xr.indexes.NDPointIndex,
-        tree_adapter_cls=SklearnKDTreeAdapter,
+        tree_adapter_cls=_TreeAdapter,
     )
 
     # Build the target dataset with all query points at once.
