@@ -7972,7 +7972,7 @@ class TestOpenDatasetCoordSpec:
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture
     ) -> None:
-        """plan.open_dataset(open_method='datatree') prints a geolocation note even without merging."""
+        """plan.open_dataset(open_method='datatree') tries geoloc from root even without merging."""
         nc_path = str(tmp_path / "g.nc")
         _make_l3_dataset([-10.0, 0.0, 10.0], [-10.0, 0.0, 10.0]).to_netcdf(nc_path)
 
@@ -8000,8 +8000,10 @@ class TestOpenDatasetCoordSpec:
         p.open_dataset(0, open_method="datatree", silent=False)
         captured = capsys.readouterr()
         output = captured.out
-        # Should always print something about geolocation (not silently skip it)
-        assert "Geolocation" in output or "DataTree" in output
+        # Should print actual geolocation info from the root dataset (not just a placeholder)
+        assert "Geolocation" in output or "geolocation" in output.lower()
+        # Should NOT say "no geolocation summary" — we now try the root dataset
+        assert "no geolocation summary" not in output
 
 
 # ---------------------------------------------------------------------------

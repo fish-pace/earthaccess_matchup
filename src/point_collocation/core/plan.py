@@ -388,9 +388,19 @@ class Plan:
             merge = spec.get("merge")
             if merge is None:
                 # Return the raw DataTree without merging — like open_datatree(f).
+                # Still try to detect geolocation from the DataTree's root node so
+                # the user gets a summary even when groups are not merged.
+                dt = _open_datatree_fn(file_obj, effective_kwargs)
                 if not silent:
-                    print("Geolocation: DataTree returned without merging — no geolocation summary.")
-                return _open_datatree_fn(file_obj, effective_kwargs)
+                    try:
+                        root_ds = dt.to_dataset()  # type: ignore[union-attr]
+                    except AttributeError:
+                        root_ds = None
+                    if root_ds is not None:
+                        _try_print_geoloc(root_ds, spec, silent=False, plan=self)
+                    else:
+                        print("Geolocation: DataTree returned without merging — could not read root dataset.")
+                return dt
             # merge is "all", "root", or a list: merge groups into a flat Dataset.
             dt = _open_datatree_fn(file_obj, effective_kwargs)
             try:
