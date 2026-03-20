@@ -283,6 +283,7 @@ class Plan:
             result = self.results[result]
 
         from point_collocation.core._open_method import (
+            _apply_coord_spec_to_spec,
             _apply_coords,
             _build_effective_open_kwargs,
             _geoloc_description,
@@ -293,6 +294,7 @@ class Plan:
             _resolve_auto_spec,
             _suppress_dask_progress,
         )
+        from point_collocation.core._coord_spec import _normalize_coord_spec
         from point_collocation.core.engine import _find_time_dim
 
         try:
@@ -307,6 +309,10 @@ class Plan:
 
         effective_open_method = "auto" if open_method is None else open_method
         spec = _normalize_open_method(effective_open_method)
+
+        # Bridge coord_spec y/x sources into spec["coords"] with conflict detection.
+        resolved_coord_spec = _normalize_coord_spec(coord_spec)
+        spec = _apply_coord_spec_to_spec(spec, resolved_coord_spec)
 
         xarray_open = spec.get("xarray_open", "dataset")
         effective_kwargs = _build_effective_open_kwargs(spec.get("open_kwargs", {}))
@@ -343,7 +349,6 @@ class Plan:
             *,
             silent: bool,
             plan: "Plan",
-            coord_spec: "dict | None",
         ) -> None:
             """Print geolocation summary or a 'not found' note."""
             if silent:
@@ -366,6 +371,19 @@ class Plan:
             except ValueError as exc:
                 print(f"Geolocation: could not detect lat/lon in dataset — {exc}")
 
+        def _promote_coords(ds: "xr.Dataset", spec: dict) -> "xr.Dataset":
+            """Apply coord promotion from *spec* to *ds*, returning the updated dataset.
+
+            Silently returns *ds* unchanged if geolocation detection fails —
+            the user can still work with the dataset; they'll have seen the error
+            from ``_try_print_geoloc`` if ``silent=False``.
+            """
+            try:
+                ds_promoted, _, _ = _apply_coords(ds, spec)
+                return ds_promoted
+            except ValueError:
+                return ds
+
         if xarray_open == "datatree":
             merge = spec.get("merge")
             if merge is None:
@@ -380,8 +398,8 @@ class Plan:
             finally:
                 if hasattr(dt, "close"):
                     dt.close()
-            _try_print_geoloc(ds, spec, silent=silent, plan=self, coord_spec=coord_spec)
-            return ds
+            _try_print_geoloc(ds, spec, silent=silent, plan=self)
+            return _promote_coords(ds, spec)
 
         if xarray_open == "dataset":
             merge = spec.get("merge")
@@ -391,8 +409,8 @@ class Plan:
             else:
                 with _suppress_dask_progress():
                     ds = xr.open_dataset(file_obj, **effective_kwargs)  # type: ignore[arg-type]
-            _try_print_geoloc(ds, spec, silent=silent, plan=self, coord_spec=coord_spec)
-            return ds
+            _try_print_geoloc(ds, spec, silent=silent, plan=self)
+            return _promote_coords(ds, spec)
 
         raise ValueError(
             f"open_method['xarray_open']={xarray_open!r} is not valid for open_dataset."
