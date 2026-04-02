@@ -8474,6 +8474,74 @@ class TestExtractAxisBatch:
         assert rows[0]["sst"] == pytest.approx(20.0)
         assert rows[1]["sst"] == pytest.approx(30.0)
 
+    def test_time_dimension_excluded_from_loaded_array(self) -> None:
+        """Vectorized time selection: loaded array has no time dim per point.
+
+        With multiple time steps in the dataset, the time dimension must be
+        reduced *before* .load() (by including it in the .sel() call as a
+        vectorised indexer).  This test checks that each point gets the
+        correct per-point time step *and* that the result contains values
+        from distinct time steps (not e.g. all from index 0), which would
+        only be possible if time was selected vectorially per point.
+        """
+        from point_collocation.core.engine import _extract_axis_batch
+
+        times = pd.to_datetime(
+            ["2023-06-01T00:00", "2023-06-01T03:00", "2023-06-01T06:00",
+             "2023-06-01T09:00", "2023-06-01T12:00", "2023-06-01T15:00",
+             "2023-06-01T18:00", "2023-06-01T21:00"]
+        )
+        # 8 time steps, 3 lat, 3 lon — each time step has a distinct constant value
+        sst_vals = np.arange(1.0, 9.0).reshape(8, 1, 1) * np.ones((8, 3, 3))
+        ds = xr.Dataset(
+            {"sst": (["time", "lat", "lon"], sst_vals.astype(np.float32))},
+            coords={"time": times, "lat": [-1.0, 0.0, 1.0], "lon": [-1.0, 0.0, 1.0]},
+        )
+        # Each row requests a different time step.
+        rows = [
+            {"lat": 0.0, "lon": 0.0, "time": times[2]},  # -> value 3.0
+            {"lat": 0.0, "lon": 0.0, "time": times[5]},  # -> value 6.0
+            {"lat": 0.0, "lon": 0.0, "time": times[7]},  # -> value 8.0
+        ]
+        _extract_axis_batch(ds, rows, ["sst"], "lon", "lat", time_dim="time")
+        assert rows[0]["sst"] == pytest.approx(3.0)
+        assert rows[1]["sst"] == pytest.approx(6.0)
+        assert rows[2]["sst"] == pytest.approx(8.0)
+
+    def test_time_dimension_with_extra_axis(self) -> None:
+        """Vectorized time + extra-axis selection both work together."""
+        from point_collocation.core.engine import _extract_axis_batch
+
+        times = pd.to_datetime(["2023-06-01", "2023-06-02"])
+        levels = [100.0, 500.0, 1000.0]
+        # shape (time=2, lev=3, lat=2, lon=2)
+        # value = time_idx * 100 + lev_idx
+        data = np.array(
+            [[[[0, 0], [0, 0]], [[1, 1], [1, 1]], [[2, 2], [2, 2]]],
+             [[[100, 100], [100, 100]], [[101, 101], [101, 101]], [[102, 102], [102, 102]]]],
+            dtype=np.float32,
+        )
+        ds = xr.Dataset(
+            {"omega": (["time", "lev", "lat", "lon"], data)},
+            coords={
+                "time": times,
+                "lev": levels,
+                "lat": [0.0, 1.0],
+                "lon": [0.0, 1.0],
+            },
+        )
+        rows = [
+            {"lat": 0.0, "lon": 0.0, "time": times[0], "lev_val": 500.0},   # time=0, lev=1 -> 1
+            {"lat": 0.0, "lon": 0.0, "time": times[1], "lev_val": 1000.0},  # time=1, lev=2 -> 102
+        ]
+        additional_axes = {"lev": {"points_col": "lev_val", "source_coord": "lev"}}
+        _extract_axis_batch(
+            ds, rows, ["omega"], "lon", "lat",
+            time_dim="time", additional_axes=additional_axes,
+        )
+        assert rows[0]["omega"] == pytest.approx(1.0)
+        assert rows[1]["omega"] == pytest.approx(102.0)
+
     def test_with_extra_axis(self) -> None:
         """_extract_axis_batch handles additional axes (e.g. depth)."""
         from point_collocation.core.engine import _extract_axis_batch

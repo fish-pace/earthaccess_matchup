@@ -1348,9 +1348,42 @@ def _extract_axis_batch(
         if all(v is not None for v in ax_vals):
             base_sel[src_coord] = xr.DataArray(ax_vals, dims=[pts_dim])
 
+    # Pre-compute a vectorised time indexer (one timestamp per point).
+    # When the variable being extracted has a time dimension, including it in
+    # the .sel() call means that .load() only reads one time step per point
+    # instead of all time steps — a significant reduction in I/O for datasets
+    # like MERRA-2 3-hourly files where each granule contains several time
+    # steps (e.g. shape (time=8, lev=72, lat=361, lon=576)).
+    _time_pts_da: "xr.DataArray | None" = None
+    if time_dim is not None and time_dim not in base_sel:
+        _raw_times = [row.get("time") for row in rows]
+        if all(t is not None for t in _raw_times):
+            try:
+                _time_pts_da = xr.DataArray(
+                    [pd.Timestamp(t) for t in _raw_times],
+                    dims=[pts_dim],
+                )
+            except Exception:
+                pass  # fall back to per-point _select_time after .load()
+
     for var in variables:
         try:
-            selected = ds[var].sel(base_sel, method="nearest")
+            # Build a per-variable selection dict.  Add time as a vectorised
+            # indexer when (a) a valid time indexer was pre-computed above,
+            # and (b) this variable actually has the time dimension.  This
+            # avoids loading all time steps during .load() when only one is
+            # needed per point.
+            _var_sel = dict(base_sel)
+            _sel_has_time = time_dim in _var_sel
+            if (
+                _time_pts_da is not None
+                and time_dim is not None
+                and not _sel_has_time
+                and time_dim in ds[var].dims
+            ):
+                _var_sel[time_dim] = _time_pts_da
+                _sel_has_time = True
+            selected = ds[var].sel(_var_sel, method="nearest")
             # Load the selected data into memory in a single operation before
             # iterating over individual points.  Without this, each
             # ``float(point_data)`` or ``to_series()`` call inside the loop
@@ -1360,10 +1393,11 @@ def _extract_axis_batch(
             # ``.load()`` here materialises the dask graph exactly once so
             # that the per-point loop operates on in-memory NumPy data.
             selected = selected.load()
-            # selected has shape (n_points, ...) with pts_dim as leading dim.
+            # selected has shape (n_points, ...) with pts_dim as leading dim
+            # (time dimension already reduced when _sel_has_time is True).
             for i, row in enumerate(rows):
                 point_data = selected.isel({pts_dim: i})
-                if time_dim is not None and time_dim not in base_sel:
+                if time_dim is not None and not _sel_has_time:
                     point_data = _select_time(point_data, time_dim, row.get("time"))
                 if point_data.ndim == 0:
                     row[var] = float(point_data)
